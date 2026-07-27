@@ -100,7 +100,22 @@ async def _setup_entry(
 
 
 async def _setup_two_appliances(hass: HomeAssistant) -> MockConfigEntry:
-    """Known states and units: price 0.25 EUR/kWh, two accruing appliances."""
+    """Known states and units: price 0.25 EUR/kWh, two accruing appliances.
+
+    Both meters are registered in the entity registry — BEFORE their states
+    exist, so the generated entity ids match the constants — because real
+    registry uuids must flow into the cost sensors' restore payloads: the
+    diagnostics redaction of ``source_entity_uuid`` is only proven by a
+    payload that actually carries one (``None`` passes through
+    ``async_redact_data`` untouched).
+    """
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "sensor", "test", "sauna-meter", suggested_object_id="sauna_heater_meter"
+    )
+    registry.async_get_or_create(
+        "sensor", "test", "pool-meter", suggested_object_id="pool_pump_meter"
+    )
     hass.states.async_set(PRICE_SENSOR, "0.25", _price_attrs())
     hass.states.async_set(SAUNA_METER, "100.0", _energy_attrs("Sauna Heater Meter"))
     hass.states.async_set(POOL_METER, "50.0", _energy_attrs("Pool Pump Meter"))
@@ -154,6 +169,11 @@ async def test_no_identifying_value_survives_serialisation(
     """
     entry = await _setup_two_appliances(hass)
     cost_entities = _cost_entity_ids(hass, entry)
+    registry = er.async_get(hass)
+    sauna_meter_entry = registry.async_get(SAUNA_METER)
+    pool_meter_entry = registry.async_get(POOL_METER)
+    assert sauna_meter_entry is not None
+    assert pool_meter_entry is not None
 
     result = await get_diagnostics_for_config_entry(hass, hass_client, entry)
 
@@ -171,6 +191,11 @@ async def test_no_identifying_value_survives_serialisation(
         "Sauna Heater Meter",
         "Pool Pump Meter",
         *cost_entities,
+        # The registry uuids the restore payloads carry: redacted by key,
+        # enforced here by value — the scan fails if they ever leak under
+        # any key.
+        sauna_meter_entry.id,
+        pool_meter_entry.id,
     ]
     for value in forbidden:
         assert value.lower() not in serialised, f"identifying value leaked: {value!r}"
@@ -199,18 +224,19 @@ async def test_content_presence(hass: HomeAssistant, hass_client: ClientSessionG
     assert isinstance(appliances, list)
     sauna, pool = appliances
     assert isinstance(sauna, dict) and isinstance(pool, dict)
-    # Decimals travel as strings end to end — never floats.
+    # Decimals travel as strings end to end — never floats. The registered
+    # meters gave the payloads real registry uuids: REDACTED, never a value.
     assert sauna["accrual"] == {
         "cost": "0.500",
         "last_energy_kwh": "102.0",
         "energy_sensor": REDACTED,
-        "source_entity_uuid": None,
+        "source_entity_uuid": REDACTED,
     }
     assert pool["accrual"] == {
         "cost": "1.000",
         "last_energy_kwh": "54.0",
         "energy_sensor": REDACTED,
-        "source_entity_uuid": None,
+        "source_entity_uuid": REDACTED,
     }
     sauna_cost = sauna["cost_entity"]
     assert isinstance(sauna_cost, dict)
@@ -240,6 +266,9 @@ async def test_price_gap_active_is_visible(
     hass: HomeAssistant, hass_client: ClientSessionGenerator
 ) -> None:
     """An unavailable price source shows as a gap, never as fabricated zeros."""
+    er.async_get(hass).async_get_or_create(
+        "sensor", "test", "sauna-meter", suggested_object_id="sauna_heater_meter"
+    )
     hass.states.async_set(PRICE_SENSOR, STATE_UNAVAILABLE)
     hass.states.async_set(SAUNA_METER, "100.0", _energy_attrs("Sauna Heater Meter"))
     entry = await _setup_entry(hass, [_appliance(SAUNA_TITLE, SAUNA_METER)])
@@ -264,7 +293,7 @@ async def test_price_gap_active_is_visible(
         "cost": "0",
         "last_energy_kwh": "100.0",
         "energy_sensor": REDACTED,
-        "source_entity_uuid": None,
+        "source_entity_uuid": REDACTED,
     }
 
 
@@ -294,7 +323,10 @@ async def test_degraded_sources_resolve_to_explicit_values(
     assert sauna_cost["state"] == STATE_UNAVAILABLE
     assert sauna_cost["available"] is False
     # The accrual read works even while the entity itself is unavailable:
-    # the baseline is None because no reading has ever arrived.
+    # the baseline is None because no reading has ever arrived. The meters
+    # are deliberately NOT registered here — this pins the other redaction
+    # branch: a missing uuid stays a visible null (a registry-less source),
+    # never a fabricated or redacted-looking value.
     assert sauna["accrual"] == {
         "cost": "0",
         "last_energy_kwh": None,
