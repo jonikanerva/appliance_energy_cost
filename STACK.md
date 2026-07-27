@@ -34,7 +34,7 @@ repo/
   hacs.json                # HACS repository metadata
   mise.toml                # pinned tool/runtime versions (Python, uv)
   pyproject.toml           # ruff, mypy, pytest, uv dev tooling config + dev-dep pins (ruff, mypy)
-  .github/workflows/       # hassfest + HACS validate + verify
+  .github/workflows/       # hassfest + HACS validate (on main / schedule / dispatch)
   STACK.md
   VISION.md
   CLAUDE.md
@@ -97,7 +97,7 @@ Bootstrap the environment with `mise install` (provisions the pinned tools/runti
 | `$TEST_CMD`   | `uv run pytest`                                                                |
 | `$VERIFY_CMD` | `uv run ruff format --check . && uv run ruff check . && uv run mypy custom_components && uv run pytest` (format-check → lint → type-check → tests) |
 
-> Python has no build artifact, so `$BUILD_CMD` maps to a **bytecode-compile syntax gate** over the integration package. The ecosystem's structural gates — `hassfest` and HACS validation — cannot run locally in a custom-integration repo (`script.hassfest` lives in the Home Assistant core repository), so they run in CI as the `home-assistant/actions/hassfest` and `hacs/action` GitHub Actions. `$VERIFY_CMD` is what any agent must run and report on before claiming completion; the PR must additionally pass the hassfest and HACS-validate actions in CI.
+> Python has no build artifact, so `$BUILD_CMD` maps to a **bytecode-compile syntax gate** over the integration package. **The quality gate is the local `$VERIFY_CMD`** — it is what any agent must run and report on before claiming completion; there is no per-PR CI. The ecosystem's structural gates — `hassfest` and HACS validation — cannot run locally in a custom-integration repo (`script.hassfest` lives in the Home Assistant core repository), so they run in CI as the `home-assistant/actions/hassfest` and `hacs/action` GitHub Actions on pushes to `main` (plus a daily schedule and manual dispatch) for release verification and upstream-rule-drift detection.
 
 ---
 
