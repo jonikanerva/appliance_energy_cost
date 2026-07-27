@@ -8,7 +8,7 @@ literals — no float ever touches a factor.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Final
 
@@ -49,6 +49,24 @@ _PRICE_TO_PER_KWH: Final[dict[EnergyUnit, Decimal]] = {
 _ENERGY_BY_NORMALISED_NAME: Final[dict[str, EnergyUnit]] = {
     unit.value.lower(): unit for unit in EnergyUnit
 }
+
+
+def parse_finite_decimal(raw: str) -> Decimal | None:
+    """Parse a state string into a finite ``Decimal``; ``None`` when unusable.
+
+    The single definition of finite-numeric: ``Decimal`` happily constructs
+    NaN/Infinity/sNaN from their string forms (states HA sensors genuinely
+    emit when a float NaN is stringified), so numericness alone is not
+    enough — a non-finite value can never price or measure anything and
+    fails closed to ``None``.
+    """
+    try:
+        value = Decimal(raw)
+    except InvalidOperation:
+        return None
+    if not value.is_finite():
+        return None
+    return value
 
 
 def parse_energy_unit(raw: str | None) -> EnergyUnit | None:
