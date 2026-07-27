@@ -1,4 +1,4 @@
-# Appliance Energy Cost
+# <img src="https://raw.githubusercontent.com/jonikanerva/appliance_energy_cost/main/custom_components/appliance_energy_cost/brand/icon.png" alt="" width="40"> Appliance Energy Cost
 
 [![Validate](https://github.com/jonikanerva/appliance_energy_cost/actions/workflows/validate.yml/badge.svg)](https://github.com/jonikanerva/appliance_energy_cost/actions/workflows/validate.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
