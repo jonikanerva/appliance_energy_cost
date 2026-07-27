@@ -9,7 +9,6 @@ parsers in ``units.py`` — no duplicate parsing logic lives here.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
 from typing import NamedTuple, override
 
 import voluptuous as vol
@@ -59,7 +58,7 @@ from .const import (
     DOMAIN,
     SUBENTRY_TYPE_APPLIANCE,
 )
-from .units import currency_matches, parse_energy_unit, parse_price_unit
+from .units import currency_matches, parse_energy_unit, parse_finite_decimal, parse_price_unit
 
 _PRICE_SENSOR_SELECTOR = EntitySelector(
     # Domain filter only: no state_class filter exists in selectors, and a
@@ -107,21 +106,6 @@ def _user_schema(hass: HomeAssistant) -> vol.Schema:
     )
 
 
-def _is_finite_number(raw: str) -> bool:
-    """Whether a state string is a finite number.
-
-    ``Decimal`` happily constructs NaN/Infinity/sNaN from their string
-    forms (states HA sensors genuinely emit when a float NaN is
-    stringified), so numericness alone is not enough — a non-finite
-    value can never price or measure anything and fails closed.
-    """
-    try:
-        value = Decimal(raw)
-    except InvalidOperation:
-        return False
-    return value.is_finite()
-
-
 class _PriceCheck(NamedTuple):
     """Outcome of the price-sensor validation matrix."""
 
@@ -144,7 +128,7 @@ def _check_price_sensor(hass: HomeAssistant, entity_id: str, currency: str) -> _
     if state is None or state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
         errors[CONF_PRICE_SENSOR] = "price_sensor_unavailable"
         return _PriceCheck(errors, placeholders, records_statistics=False)
-    if not _is_finite_number(state.state):
+    if parse_finite_decimal(state.state) is None:
         errors[CONF_PRICE_SENSOR] = "price_not_numeric"
         placeholders["state"] = state.state
         return _PriceCheck(errors, placeholders, records_statistics=False)
@@ -187,7 +171,7 @@ def _check_energy_sensor(
     if state_class not in (SensorStateClass.TOTAL, SensorStateClass.TOTAL_INCREASING):
         errors[CONF_ENERGY_SENSOR] = "energy_not_cumulative"
         return errors, placeholders
-    if not _is_finite_number(state.state):
+    if parse_finite_decimal(state.state) is None:
         errors[CONF_ENERGY_SENSOR] = "energy_not_numeric"
         placeholders["state"] = state.state
     return errors, placeholders

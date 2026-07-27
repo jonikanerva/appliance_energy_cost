@@ -40,6 +40,13 @@
       "reconfigure_successful": "Reconfiguration was successful."
     }
   },
+  "entity": {
+    "sensor": {
+      "cost": {
+        "name": "{appliance} cost"
+      }
+    }
+  },
   "config_subentries": {
     "appliance": {
       "entry_type": "Appliance",

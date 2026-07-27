@@ -11,6 +11,7 @@ from custom_components.appliance_energy_cost.units import (
     PriceUnit,
     currency_matches,
     parse_energy_unit,
+    parse_finite_decimal,
     parse_price_unit,
     to_kwh,
     to_price_per_kwh,
@@ -121,3 +122,37 @@ def test_currency_matches_is_case_and_whitespace_insensitive(numerator: str, cur
 )
 def test_currency_mismatches_fail_closed(numerator: str, currency: str) -> None:
     assert not currency_matches(numerator, currency)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0", Decimal("0")),
+        ("12.345", Decimal("12.345")),
+        ("-0.5", Decimal("-0.5")),
+        (" 7.25 ", Decimal("7.25")),
+        ("1E+2", Decimal("100")),
+    ],
+)
+def test_parse_finite_decimal_parses_finite_numbers(raw: str, expected: Decimal) -> None:
+    assert parse_finite_decimal(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "abc",
+        "unknown",
+        "unavailable",
+        "nan",
+        "NaN",
+        "sNaN",
+        "inf",
+        "Infinity",
+        "-Infinity",
+        "12,5",
+    ],
+)
+def test_parse_finite_decimal_fails_closed_on_non_finite_input(raw: str) -> None:
+    assert parse_finite_decimal(raw) is None
