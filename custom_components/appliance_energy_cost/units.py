@@ -76,6 +76,18 @@ def parse_price_unit(raw: str | None) -> PriceUnit | None:
     return PriceUnit(numerator=numerator, denominator=denominator)
 
 
+def currency_matches(numerator: str, currency: str) -> bool:
+    """Whether a price-unit numerator names the configured currency.
+
+    v1 is deliberately strict: case-insensitive equality after stripping
+    whitespace, nothing more. A currency symbol ("€") or a subunit ("snt",
+    "c") never matches — a subunit price silently accepted would make every
+    cost figure 100x off, and the integration never rescales prices.
+    Issue #14 owns any future symbol-equivalence map.
+    """
+    return numerator.strip().casefold() == currency.strip().casefold()
+
+
 def to_kwh(value: Decimal, unit: EnergyUnit) -> Decimal:
     """Convert an energy value expressed in ``unit`` to kWh."""
     return value * _ENERGY_TO_KWH[unit]
