@@ -228,6 +228,79 @@ def test_reset_never_decreases_cost_with_a_non_negative_price() -> None:
     assert result.state.cost >= state.cost
 
 
+def test_negative_reading_is_invalid_and_changes_nothing() -> None:
+    # Without the guard this would classify as a reset and charge -5 x 0.10,
+    # silently decreasing the cumulative cost.
+    state = _state(cost="7", baseline="5000", reading="5000", price="0.10")
+    result = apply_energy(state, D("-5"))
+    assert result.events == (AccrualEvent.INVALID_READING,)
+    assert result.state == state
+
+
+def test_negative_first_reading_never_becomes_the_baseline() -> None:
+    # A -5 baseline would fabricate 0.50 of cost on the next real reading.
+    state = _state(price="0.10")
+    state, events = apply_energy(state, D("-5"))
+    assert events == (AccrualEvent.INVALID_READING,)
+    assert state.last_energy_kwh is None
+    assert state.last_reading_kwh is None
+    state, events = apply_energy(state, D("100"))
+    assert events == (AccrualEvent.BASELINE_INITIALISED,)
+    assert state.cost == D("0")
+
+
+def test_negative_reading_during_a_gap_is_invalid() -> None:
+    state = _state(cost="1", baseline="100", reading="100")
+    result = apply_energy(state, D("-5"))
+    assert result.events == (AccrualEvent.INVALID_READING,)
+    assert result.state == state
+
+
+def test_negative_reading_on_price_change_is_discarded_visibly() -> None:
+    # The price change itself stays valid; the settlement falls back to the
+    # documented no-reading degraded path.
+    state = _state(baseline="100", reading="100", price="0.10")
+    state, events = apply_price(state, D("0.50"), D("-5"))
+    assert events == (AccrualEvent.INVALID_READING,)
+    assert state.price_per_kwh == D("0.50")
+    assert state.last_energy_kwh == D("100")
+    assert state.cost == D("0")
+
+
+def test_negative_reading_on_price_loss_still_starts_the_gap() -> None:
+    state = _state(baseline="100", reading="100", price="0.10")
+    state, events = apply_price(state, None, D("-5"))
+    assert events == (AccrualEvent.INVALID_READING, AccrualEvent.GAP_STARTED)
+    assert state.price_per_kwh is None
+    assert state.last_reading_kwh == D("100")
+
+
+def test_negative_reading_on_gap_end_defers_settlement() -> None:
+    state = _state(baseline="100", reading="106")
+    state, events = apply_price(state, D("0.20"), D("-5"))
+    assert events == (AccrualEvent.INVALID_READING, AccrualEvent.GAP_ENDED)
+    assert state.cost == D("0")
+    assert state.last_energy_kwh == D("100")
+    # The held baseline still prices the gap delta at the next valid reading.
+    state, events = apply_energy(state, D("106"))
+    assert events == (AccrualEvent.ACCRUED,)
+    assert state.cost == D("1.20")
+
+
+def test_negative_reading_in_gap_continuation_price_event_is_invalid() -> None:
+    state = _state(cost="1", baseline="100", reading="100")
+    result = apply_price(state, None, D("-5"))
+    assert result.events == (AccrualEvent.INVALID_READING,)
+    assert result.state == state
+
+
+def test_calibrate_with_negative_reading_is_rejected_whole() -> None:
+    state = _state(cost="5", baseline="100", reading="100", price="0.10")
+    result = calibrate(state, D("0"), D("-5"))
+    assert result.events == (AccrualEvent.INVALID_READING,)
+    assert result.state == state
+
+
 def test_negative_price_decreases_cost() -> None:
     state = _state(baseline="100", reading="100", price="-0.05")
     result = apply_energy(state, D("102"))

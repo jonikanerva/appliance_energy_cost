@@ -11,6 +11,10 @@ decrease of a ``total_increasing`` source is a *reset* only when the new
 reading drops below 90 % of the last raw reading (Home Assistant core's
 ``reset_detected`` predicate); a smaller decrease is a *dip* that charges
 nothing and holds the priced baseline at its high-water mark.
+
+A negative cumulative reading is out of contract and fails closed with
+``INVALID_READING``: it never settles, never becomes a baseline, and never
+enters the reset predicate (mirrors ``backfill``'s invalid-energy rule).
 """
 
 from __future__ import annotations
@@ -58,6 +62,7 @@ class AccrualEvent(StrEnum):
     GAP_STARTED = "gap_started"
     GAP_ENDED = "gap_ended"
     CALIBRATED = "calibrated"
+    INVALID_READING = "invalid_reading"
 
 
 class Transition(NamedTuple):
@@ -192,8 +197,15 @@ def apply_energy(state: AccrualState, energy_kwh: Decimal) -> Transition:
 
     Without a baseline the reading only initialises it; during a price gap
     the reading is tracked but nothing is charged; otherwise the reading is
-    settled at the active price.
+    settled at the active price. A negative reading is out of contract for
+    a cumulative meter and is rejected visibly with ``INVALID_READING``.
     """
+    if energy_kwh < 0:
+        # Fail closed (mirrors backfill's invalid_energy_hours): charging a
+        # negative reading would decrease cost, and letting it become the
+        # baseline or the raw reading would fabricate cost or corrupt the
+        # reset predicate later.
+        return Transition(state, (AccrualEvent.INVALID_READING,))
     if state.last_energy_kwh is None or state.last_reading_kwh is None:
         return Transition(
             replace(state, last_energy_kwh=energy_kwh, last_reading_kwh=energy_kwh),
@@ -268,31 +280,42 @@ def apply_price(
     slow-updating energy sensor never shifts consumption onto the next
     hour's price. ``new_price_per_kwh=None`` starts a price gap;
     a price arriving while one is active ends it (see ``_end_gap``).
+    A negative reading is discarded visibly (``INVALID_READING``) and the
+    transition falls back to the documented no-reading degraded path.
     """
+    reading = current_energy_kwh
+    invalid_events: tuple[AccrualEvent, ...] = ()
+    if reading is not None and reading < 0:
+        # Fail closed (mirrors backfill's invalid_energy_hours): a negative
+        # cumulative reading must never settle, become a baseline, or enter
+        # the reset predicate.
+        reading = None
+        invalid_events = (AccrualEvent.INVALID_READING,)
     old_price = state.price_per_kwh
     if old_price is None:
         if new_price_per_kwh is None:
-            if current_energy_kwh is None:
-                return Transition(state, ())
+            if reading is None:
+                return Transition(state, invalid_events)
             # A still-unavailable price event can carry a reading; consume
             # it exactly like an energy event during the gap so the raw
             # reading never goes stale for reset/dip classification.
-            return apply_energy(state, current_energy_kwh)
-        return _end_gap(state, new_price_per_kwh, current_energy_kwh)
-    if current_energy_kwh is None:
-        # Degraded but documented: with no reading at switch time there is
-        # nothing to settle here — the old-price share cannot be measured,
-        # so energy accumulated since the last event is unavoidably priced
-        # at the NEW price at the next energy event.
+            return apply_energy(state, reading)
+        ended = _end_gap(state, new_price_per_kwh, reading)
+        return Transition(ended.state, (*invalid_events, *ended.events))
+    if reading is None:
+        # Degraded but documented: with no (valid) reading at switch time
+        # there is nothing to settle here — the old-price share cannot be
+        # measured, so energy accumulated since the last event is
+        # unavoidably priced at the NEW price at the next energy event.
         next_state = replace(state, price_per_kwh=new_price_per_kwh)
         if new_price_per_kwh is None:
-            return Transition(next_state, (AccrualEvent.GAP_STARTED,))
-        return Transition(next_state, ())
+            return Transition(next_state, (*invalid_events, AccrualEvent.GAP_STARTED))
+        return Transition(next_state, invalid_events)
     settled = _settle(
         state.cost,
         state.last_energy_kwh,
         state.last_reading_kwh,
-        current_energy_kwh,
+        reading,
         old_price,
     )
     next_state = AccrualState(
@@ -315,8 +338,12 @@ def calibrate(
 
     Reset-to-zero is ``calibrate(state, Decimal("0"), reading)``; there is
     no separate reset function. A ``None`` reading returns the state to
-    awaiting-first-reading.
+    awaiting-first-reading. A negative reading rejects the whole
+    calibration (``INVALID_READING``): it must never become a baseline,
+    and a partial calibration would be worse than none.
     """
+    if current_energy_kwh is not None and current_energy_kwh < 0:
+        return Transition(state, (AccrualEvent.INVALID_READING,))
     return Transition(
         AccrualState(
             cost=cost,
