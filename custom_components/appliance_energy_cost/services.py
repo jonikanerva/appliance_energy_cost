@@ -112,17 +112,11 @@ PREVIEW_SCHEMA: Final = vol.Schema(
     }
 )
 
-# Field parity with PREVIEW_SCHEMA by design: a pasted preview call plus
-# ``confirm: true`` must be a valid import call.
-IMPORT_SCHEMA: Final = vol.Schema(
+# Field parity with PREVIEW_SCHEMA is structural: the import schema EXTENDS
+# the preview schema, so a pasted preview call plus ``confirm: true`` is a
+# valid import call by construction.
+IMPORT_SCHEMA: Final = PREVIEW_SCHEMA.extend(
     {
-        vol.Required(ATTR_CONFIG_ENTRY): ConfigEntrySelector(
-            ConfigEntrySelectorConfig(integration=DOMAIN)
-        ),
-        vol.Required(ATTR_START): cv.datetime,
-        vol.Optional(ATTR_END): cv.datetime,
-        vol.Optional(ATTR_APPLIANCES): vol.All(cv.ensure_list, [cv.entity_id], vol.Length(min=1)),
-        vol.Optional(ATTR_STRICT, default=True): cv.boolean,
         # The value check lives in the handler, not the schema: a schema
         # failure renders as a generic voluptuous error, the handler raises
         # the translated explanation of what confirm authorises.
