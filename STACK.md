@@ -87,7 +87,7 @@ repo/
 
 ## 3. Build & verify commands
 
-Bootstrap the environment with `mise install` (provisions the pinned tools/runtime) before running any command below. `pyproject.toml` (via `uv`) is the single source of truth for tool configuration. Never invoke `ruff`, `mypy`, or `pytest` with ad-hoc flags from commits, CI, or agent scripts — go through the declared commands below so local and CI behaviour cannot drift.
+Bootstrap the environment with `mise install` (provisions the pinned tools/runtime) before running any command below. `pyproject.toml` (via `uv`) is the single source of truth for tool configuration. Never invoke `ruff`, `mypy`, or `pytest` with ad-hoc flags from commits, CI, or agent scripts — go through the declared commands below so local and CI behaviour cannot drift. Test coverage is part of the test gate and lives entirely in `pyproject.toml` (`[tool.pytest.ini_options] addopts` plus `[tool.coverage.report] fail_under`), never in command flags — bare `uv run pytest` measures and enforces it identically everywhere. `# pragma: no cover` is banned: coverage gaps are closed with tests or adjudicated in `quality_scale.yaml`, never hidden from the report.
 
 | Variable      | Command                                                                       |
 | ------------- | ----------------------------------------------------------------------------- |
@@ -146,10 +146,11 @@ Default answer to "should we add a library?" is **no**. Home Assistant enforces 
 | `pytest-asyncio`                       | owned by p-h-c-c pin, resolved in `uv.lock` | Async test support                           |
 | `syrupy`                               | owned by p-h-c-c pin, resolved in `uv.lock` | Snapshot tests for diagnostics/entity states |
 | `freezegun`                            | owned by p-h-c-c pin, resolved in `uv.lock` | Deterministic time in tests                  |
+| `pytest-cov`                           | owned by p-h-c-c pin, resolved in `uv.lock` | Coverage measurement for the quality-scale test-coverage adjudication |
 | `ruff`                                 | exact pin (`==`)                          | Lint + format (HA core's choice)               |
 | `mypy`                                 | exact pin (`==`)                          | Strict type checking                           |
 
-> `pytest-homeassistant-custom-component` hard-pins the exact versions of `homeassistant`, `pytest`, `pytest-asyncio`, `syrupy`, and `freezegun` it is built against. Those five are therefore deliberately declared **unbounded** in `pyproject.toml`: one p-h-c-c bump moves the whole HA-tracking set atomically, and `uv.lock` records the resolved exact versions. This satisfies the spirit of "stable, explicit versions" — the pins exist, they are just owned by p-h-c-c plus the lockfile rather than duplicated (and risk drifting) in `pyproject.toml`.
+> `pytest-homeassistant-custom-component` hard-pins the exact versions of `homeassistant`, `pytest`, `pytest-asyncio`, `syrupy`, `freezegun`, and `pytest-cov` it is built against. Those six are therefore deliberately declared **unbounded** in `pyproject.toml`: one p-h-c-c bump moves the whole HA-tracking set atomically, and `uv.lock` records the resolved exact versions. This satisfies the spirit of "stable, explicit versions" — the pins exist, they are just owned by p-h-c-c plus the lockfile rather than duplicated (and risk drifting) in `pyproject.toml`.
 
 New runtime entries require a `STACK.md` PR (or ADR) with rationale, owner, approver, and date — and a `hassfest`-clean manifest.
 
