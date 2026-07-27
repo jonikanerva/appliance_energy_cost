@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components.recorder.models import (
     StatisticData,
     StatisticMeanType,
@@ -232,7 +233,12 @@ def _receipts(response: dict[str, object]) -> list[dict[str, object]]:
 
 def _cost_rows(hass: HomeAssistant, statistic_id: str = COST_ENTITY) -> list[dict[str, object]]:
     """Every hourly (start epoch, sum) row on a cost id, pre-window included."""
-    stats = statistics_during_period(hass, _hour(-48), statistic_ids={statistic_id}, types={"sum"})
+    stats = statistics_during_period(
+        hass,
+        datetime(2026, 1, 1, tzinfo=UTC),
+        statistic_ids={statistic_id},
+        types={"sum"},
+    )
     return stats.get(statistic_id, [])
 
 
@@ -563,6 +569,100 @@ async def test_pre_start_rows_require_explicit_initial_cost(hass: HomeAssistant)
     assert receipt[ATTR_ROWS_WRITTEN] == 4
 
 
+async def test_previous_month_rows_trip_the_continuity_gate(hass: HomeAssistant) -> None:
+    """Pre-start rows ONLY in a previous local month still trip the gate.
+
+    The partial-month hourly read finds nothing, so the gate must fall back
+    to the monthly-bucket path and name the last full-month sum.
+    """
+    entry = await _setup_entry(hass)
+    _seed_energy(hass, ENERGY_SENSOR, _clean_energy_rows())
+    _seed_price(hass, _clean_price_rows())
+    june = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
+    _seed_cost(hass, [(june, 7.0), (june + timedelta(hours=1), 8.0)])
+    await async_wait_recording_done(hass)
+
+    with pytest.raises(ServiceValidationError) as excinfo:
+        await _call_import(hass, entry)
+    assert excinfo.value.translation_key == "import_discontinuity"
+    placeholders = excinfo.value.translation_placeholders
+    assert placeholders is not None
+    assert "8.0" in placeholders["details"]
+
+    await async_wait_recording_done(hass)
+    assert _start_sums(_cost_rows(hass)) == [
+        (june.timestamp(), 7.0),
+        ((june + timedelta(hours=1)).timestamp(), 8.0),
+    ]
+
+
+async def test_continuity_gate_at_exact_local_month_start(hass: HomeAssistant) -> None:
+    """A start exactly at a local month boundary skips the empty hourly read.
+
+    The partial month [month start, start) is empty by construction, so the
+    previous month's last row must be found via the monthly buckets alone;
+    an explicit initial_cost then continues the series across the boundary.
+    """
+    entry = await _setup_entry(hass)
+    month_start = datetime(2026, 7, 1, 0, 0, tzinfo=UTC)  # tests run in UTC
+    window = {
+        ATTR_START: month_start.isoformat(),
+        ATTR_END: (month_start + timedelta(hours=4)).isoformat(),
+    }
+    _seed_energy(hass, ENERGY_SENSOR, _clean_energy_rows(month_start))
+    _seed_price(hass, _clean_price_rows(month_start))
+    _seed_cost(hass, [(month_start - timedelta(hours=1), 12.5)])  # 2026-06-30 23:00
+    await async_wait_recording_done(hass)
+
+    with pytest.raises(ServiceValidationError) as excinfo:
+        await _call_import(hass, entry, **window)
+    assert excinfo.value.translation_key == "import_discontinuity"
+    placeholders = excinfo.value.translation_placeholders
+    assert placeholders is not None
+    assert "12.5" in placeholders["details"]
+
+    response = await _call_import(hass, entry, **window, **{ATTR_INITIAL_COST: 12.5})
+    (receipt,) = _receipts(response)
+    assert receipt[ATTR_ROWS_WRITTEN] == 4
+    await async_wait_recording_done(hass)
+    assert _start_sums(_cost_rows(hass)) == [
+        ((month_start - timedelta(hours=1)).timestamp(), 12.5),
+        (month_start.timestamp(), 12.6),
+        ((month_start + timedelta(hours=1)).timestamp(), 12.8),
+        ((month_start + timedelta(hours=2)).timestamp(), 13.1),
+        ((month_start + timedelta(hours=3)).timestamp(), 13.5),
+    ]
+
+
+async def test_post_end_same_month_rows_do_not_trip_the_continuity_gate(
+    hass: HomeAssistant,
+) -> None:
+    """No-leak counterpart: a post-end row in start's month never trips the gate.
+
+    Core aligns the monthly read outward to whole local months, so the
+    bucket containing start also covers this row — the gate must not
+    mistake it for pre-start history.
+    """
+    entry = await _setup_entry(hass)
+    _seed_energy(hass, ENERGY_SENSOR, _clean_energy_rows())
+    _seed_price(hass, _clean_price_rows())
+    _seed_cost(hass, [(_hour(30), 77.0)])  # 2026-07-21 06:00, after end, same month
+    await async_wait_recording_done(hass)
+
+    response = await _call_import(hass, entry)
+    (receipt,) = _receipts(response)
+    assert receipt[ATTR_ROWS_WRITTEN] == 4
+
+    await async_wait_recording_done(hass)
+    assert _start_sums(_cost_rows(hass)) == [
+        (_hour(0).timestamp(), 0.1),
+        (_hour(1).timestamp(), 0.3),
+        (_hour(2).timestamp(), 0.6),
+        (_hour(3).timestamp(), 1.0),
+        (_hour(30).timestamp(), 77.0),
+    ]
+
+
 async def test_divergent_metadata_blocks_and_stays_untouched(hass: HomeAssistant) -> None:
     """Full-field metadata guard: a foreign-shaped series is never relabeled."""
     entry = await _setup_entry(hass)
@@ -707,7 +807,9 @@ async def test_zero_point_appliance_is_skipped_without_a_metadata_row(
     assert _cost_rows(hass, COST_ENTITY_B) == []
 
 
-async def test_import_coexists_with_live_compilation(hass: HomeAssistant, freezer: object) -> None:
+async def test_import_coexists_with_live_compilation(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
     """Import + live compile: no crash; boundary change == live - imported sum.
 
     Pins the issue #7 coexistence facts: the live sum lineage reads only the
@@ -715,7 +817,7 @@ async def test_import_coexists_with_live_compilation(hass: HomeAssistant, freeze
     live-compiled hour after imported history shows
     change == live_sum - imported_sum.
     """
-    freezer.move_to("2026-07-20 06:56:00+00:00")  # type: ignore[attr-defined]
+    freezer.move_to("2026-07-20 06:56:00+00:00")
     entry = await _setup_entry(hass)
 
     # The live cost sensor accrues 0.5 EUR within hour 06.
