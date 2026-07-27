@@ -1,26 +1,40 @@
-"""The ``preview_backfill`` service: a dry-run summary of reconstructable history.
+"""The ``preview_backfill`` and ``import_backfill`` services.
 
 The only module that touches ``homeassistant.components.recorder``. It reads
 hourly long-term statistics through the supported statistics APIs, narrows the
 rows into domain shapes at the edge, and hands the pure calculation to
-``backfill.py``. It never writes statistics and never modifies live sensors —
-importing is a separate, explicitly confirmed action (issue #6).
+``backfill.py``. The preview never writes; the import writes only through the
+supported ``async_import_statistics`` API, only to the integration's own cost
+statistic IDs, and only after an explicit ``confirm`` and every pre-write gate
+has passed for every selected appliance. Neither service modifies live
+sensors — joining the live series to imported history is the separate
+calibration service (issue #7).
 
-Concurrency shape (event loop never blocks): two sequential executor jobs —
-one recorder-executor pass reading metadata and rows, then one
-general-executor pass running the Decimal-heavy series calculation.
+Concurrency shape (event loop never blocks): sequential executor jobs — a
+recorder-executor pass reading metadata and rows, a general-executor pass
+running the Decimal-heavy series calculation, and (import only) a
+recorder-executor read-back after the write is committed.
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Final
 
 import voluptuous as vol
-from homeassistant.components.recorder.models import StatisticMetaData
+from homeassistant.components.recorder.const import DOMAIN as RECORDER_DOMAIN
+from homeassistant.components.recorder.models import (
+    StatisticData,
+    StatisticMeanType,
+    StatisticMetaData,
+)
 from homeassistant.components.recorder.statistics import (
     StatisticsRow,
+    async_import_statistics,
     get_metadata,
     statistics_during_period,
 )
@@ -32,7 +46,7 @@ from homeassistant.core import (
     SupportsResponse,
     callback,
 )
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import service
@@ -46,18 +60,23 @@ from .const import (
     ATTR_APPLIANCE,
     ATTR_APPLIANCES,
     ATTR_CONFIG_ENTRY,
+    ATTR_CONFIRM,
     ATTR_END,
     ATTR_END_ENERGY_KWH,
     ATTR_ENERGY_GAP_HOURS,
+    ATTR_EXISTING_ROWS_KEPT,
     ATTR_EXPECTED_HOURS,
     ATTR_FIRST_POINT,
     ATTR_HOURLY_POINTS,
+    ATTR_INITIAL_COST,
     ATTR_INVALID_ENERGY_HOURS,
     ATTR_INVALID_ENERGY_RANGES,
     ATTR_LAST_POINT,
     ATTR_MISSING_PRICE_HOURS,
     ATTR_MISSING_PRICE_RANGES,
     ATTR_OK,
+    ATTR_OVERWRITE_EXISTING,
+    ATTR_ROWS_WRITTEN,
     ATTR_START,
     ATTR_STATISTIC_ID,
     ATTR_STRICT,
@@ -69,6 +88,7 @@ from .const import (
     CONF_PRICE_SENSOR,
     DOMAIN,
     RANGE_CAP,
+    SERVICE_IMPORT_BACKFILL,
     SERVICE_PREVIEW_BACKFILL,
     SUBENTRY_TYPE_APPLIANCE,
 )
@@ -77,6 +97,8 @@ from .units import EnergyUnit, PriceUnit, currency_matches, parse_energy_unit, p
 
 if TYPE_CHECKING:
     from . import ApplianceEnergyCostConfigEntry
+
+_LOGGER = logging.getLogger(__name__)
 
 PREVIEW_SCHEMA: Final = vol.Schema(
     {
@@ -88,6 +110,33 @@ PREVIEW_SCHEMA: Final = vol.Schema(
         vol.Optional(ATTR_APPLIANCES): vol.All(cv.ensure_list, [cv.entity_id], vol.Length(min=1)),
         vol.Optional(ATTR_STRICT, default=True): cv.boolean,
     }
+)
+
+# Field parity with PREVIEW_SCHEMA is structural: the import schema EXTENDS
+# the preview schema, so a pasted preview call plus ``confirm: true`` is a
+# valid import call by construction.
+IMPORT_SCHEMA: Final = PREVIEW_SCHEMA.extend(
+    {
+        # The value check lives in the handler, not the schema: a schema
+        # failure renders as a generic voluptuous error, the handler raises
+        # the translated explanation of what confirm authorises.
+        vol.Optional(ATTR_CONFIRM, default=False): cv.boolean,
+        vol.Optional(ATTR_OVERWRITE_EXISTING, default=False): cv.boolean,
+        # Deliberately no schema default: the continuity gate must
+        # distinguish an ABSENT initial_cost from an explicit 0. Negative
+        # values are legal — negative prices yield negative cumulative cost.
+        vol.Optional(ATTR_INITIAL_COST): vol.Coerce(float),
+    }
+)
+
+_EPOCH: Final = datetime.fromtimestamp(0, tz=UTC)
+
+_MIRRORED_METADATA_FIELDS: Final = (
+    "mean_type",
+    "has_sum",
+    "name",
+    "unit_class",
+    "unit_of_measurement",
 )
 
 
@@ -105,6 +154,21 @@ class _AppliancePreview:
 
     selection: _ApplianceSelection
     energy_rows: tuple[EnergyRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplianceImport:
+    """One appliance's computed import: summary, series, and write payload.
+
+    ``payload`` is a CONCRETE list, never a generator: the recorder requeues
+    a failed import task with the same iterable, and an exhausted generator
+    would silently retry an empty write.
+    """
+
+    selection: _ApplianceSelection
+    summary: dict[str, JsonValueType]
+    series: BackfillSeries
+    payload: list[StatisticData]
 
 
 def hours_to_contiguous_ranges(
@@ -379,33 +443,35 @@ def _appliance_summary(
     }
 
 
-def _compute_previews(
+def _compute_series_summaries(
     previews: tuple[_AppliancePreview, ...],
     price_rows: tuple[PriceRow, ...],
     price_unit: EnergyUnit,
     expected_hours: int,
-) -> tuple[list[JsonValueType], bool]:
+    initial_cost: Decimal,
+) -> tuple[tuple[dict[str, JsonValueType], BackfillSeries], ...]:
     """Run the pure series calculation for every selected appliance.
 
-    Runs on the general executor: the Decimal arithmetic over a long period
-    times many appliances is CPU-bound and must stay off the event loop.
-    Energy rows arrive in kWh (recorder-converted); price rows arrive in the
-    stored metadata unit and are converted by the domain via ``price_unit``.
-    Returns the per-appliance summaries and whether every appliance is valid.
+    The single compute shared by preview and import — identical inputs yield
+    an identical series, so a confirmed import writes exactly what the
+    preview showed. Runs on the general executor: the Decimal arithmetic
+    over a long period times many appliances is CPU-bound and must stay off
+    the event loop. Energy rows arrive in kWh (recorder-converted); price
+    rows arrive in the stored metadata unit and are converted by the domain
+    via ``price_unit``. Returns one (summary, series) pair per appliance, in
+    ``previews`` order.
     """
-    summaries: list[JsonValueType] = []
-    all_valid = True
+    results: list[tuple[dict[str, JsonValueType], BackfillSeries]] = []
     for preview in previews:
         series = build_backfill_series(
             preview.energy_rows,
             price_rows,
             energy_unit=EnergyUnit.KWH,
             price_unit=price_unit,
+            initial_cost=initial_cost,
         )
-        if series.missing_price_hours or series.invalid_energy_hours:
-            all_valid = False
-        summaries.append(_appliance_summary(preview, series, expected_hours))
-    return summaries, all_valid
+        results.append((_appliance_summary(preview, series, expected_hours), series))
+    return tuple(results)
 
 
 async def _async_handle_preview(call: ServiceCall) -> ServiceResponse:
@@ -443,8 +509,17 @@ async def _async_handle_preview(call: ServiceCall) -> ServiceResponse:
         for selection in selections
     )
     price_rows = _narrow_price_rows(stats.get(runtime.price_sensor, []))
-    summaries, all_valid = await hass.async_add_executor_job(
-        _compute_previews, previews, price_rows, price_unit.denominator, expected_hours
+    pairs = await hass.async_add_executor_job(
+        _compute_series_summaries,
+        previews,
+        price_rows,
+        price_unit.denominator,
+        expected_hours,
+        Decimal("0"),
+    )
+    summaries: list[JsonValueType] = [summary for summary, _ in pairs]
+    all_valid = all(
+        not series.missing_price_hours and not series.invalid_energy_hours for _, series in pairs
     )
 
     return {
@@ -462,6 +537,477 @@ async def _async_handle_preview(call: ServiceCall) -> ServiceResponse:
     }
 
 
+def _compute_import_payloads(
+    previews: tuple[_AppliancePreview, ...],
+    price_rows: tuple[PriceRow, ...],
+    price_unit: EnergyUnit,
+    expected_hours: int,
+    initial_cost: Decimal,
+) -> tuple[_ApplianceImport, ...]:
+    """Run the shared series calculation and build the write payloads.
+
+    Runs on the general executor: payload construction iterates potentially
+    years of hourly points on top of the Decimal arithmetic.
+    """
+    pairs = _compute_series_summaries(
+        previews, price_rows, price_unit, expected_hours, initial_cost
+    )
+    return tuple(
+        _ApplianceImport(
+            selection=preview.selection,
+            summary=summary,
+            series=series,
+            payload=[
+                StatisticData(start=point.start, state=point.state, sum=point.sum)
+                for point in series.points
+            ],
+        )
+        for preview, (summary, series) in zip(previews, pairs, strict=True)
+    )
+
+
+def _last_pre_start_sums(
+    hass: HomeAssistant,
+    start: datetime,
+    cost_ids: set[str],
+) -> dict[str, float | None]:
+    """Resolve each cost id's last statistics row before ``start``, bounded.
+
+    Two bounded reads instead of an unbounded hourly scan from the epoch:
+    monthly buckets for the full local-calendar months strictly before the
+    month containing ``start`` (the monthly reduce carries each bucket's
+    last row's sum), plus hourly rows for the partial month ``[month start,
+    start)``. The monthly buckets MUST be filtered: core aligns a monthly
+    read's boundaries outward to whole local months, so the bucket
+    containing ``start`` can include rows at or after ``start`` and cannot
+    be trusted. ``get_last_statistics`` cannot answer this either — the live
+    series' last row may sit after the import window.
+
+    A key is present iff the cost id has any row before ``start``; the
+    value is that last row's sum.
+    """
+    month_start_local = dt_util.as_local(start).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    month_start = dt_util.as_utc(month_start_local)
+    month_start_ts = month_start.timestamp()
+    monthly = statistics_during_period(hass, _EPOCH, start, cost_ids, "month", None, {"sum"})
+    hourly = (
+        statistics_during_period(hass, month_start, start, cost_ids, "hour", None, {"sum"})
+        if month_start < start
+        else {}
+    )
+    last_sums: dict[str, float | None] = {}
+    for statistic_id in cost_ids:
+        partial_month_rows = hourly.get(statistic_id, [])
+        full_month_rows = [
+            row for row in monthly.get(statistic_id, []) if row["start"] < month_start_ts
+        ]
+        if partial_month_rows:
+            last_sums[statistic_id] = partial_month_rows[-1].get("sum")
+        elif full_month_rows:
+            last_sums[statistic_id] = full_month_rows[-1].get("sum")
+    return last_sums
+
+
+def _fetch_import_statistics(
+    hass: HomeAssistant,
+    start: datetime,
+    end: datetime,
+    source_ids: set[str],
+    cost_ids: set[str],
+) -> tuple[
+    dict[str, tuple[int, StatisticMetaData]],
+    dict[str, list[StatisticsRow]],
+    dict[str, list[StatisticsRow]],
+    dict[str, float | None],
+]:
+    """Read everything the import gates need in one recorder-executor pass.
+
+    Returns metadata over sources and cost ids, the sources' hourly rows in
+    ``[start, end)`` (as the preview reads them), the cost ids' existing
+    hourly rows in ``[start, end)`` (overlap gate; overwrite receipt), and
+    each cost id's last pre-start sum (continuity gate).
+    """
+    metadata = get_metadata(hass, statistic_ids=source_ids | cost_ids)
+    source_stats = statistics_during_period(
+        hass,
+        start,
+        end,
+        source_ids,
+        "hour",
+        {"energy": EnergyUnit.KWH.value},
+        {"change", "mean", "state"},
+    )
+    cost_stats = statistics_during_period(hass, start, end, cost_ids, "hour", None, {"sum"})
+    pre_start_sums = _last_pre_start_sums(hass, start, cost_ids)
+    return metadata, source_stats, cost_stats, pre_start_sums
+
+
+def _read_back_cost_stats(
+    hass: HomeAssistant,
+    start: datetime,
+    end: datetime,
+    cost_ids: set[str],
+) -> dict[str, list[StatisticsRow]]:
+    """Re-read the cost ids' committed rows. Runs on the recorder executor."""
+    return statistics_during_period(hass, start, end, cost_ids, "hour", None, {"sum"})
+
+
+def _cost_metadata(statistic_id: str, currency: str) -> StatisticMetaData:
+    """The cost series' metadata, mirroring the live-compiled series exactly.
+
+    Every field explicit: omitting ``mean_type`` or ``unit_class`` triggers
+    a 2026.11 deprecation report in core, and any drift from the live
+    sensor's compiled metadata would split one series in two (the full-field
+    guard in ``_require_metadata_mirror`` enforces the same shape on read).
+    """
+    return StatisticMetaData(
+        mean_type=StatisticMeanType.NONE,
+        has_sum=True,
+        name=None,
+        source=RECORDER_DOMAIN,
+        statistic_id=statistic_id,
+        unit_class=None,
+        unit_of_measurement=currency,
+    )
+
+
+def _row_start_iso(row: StatisticsRow) -> str:
+    """Render a statistics row's start (epoch seconds, UTC) as ISO UTC."""
+    return datetime.fromtimestamp(round(row["start"]), tz=UTC).isoformat()
+
+
+def _point_keys(series: BackfillSeries) -> set[int]:
+    """The series' point starts as integer epoch keys (row alignment keys)."""
+    return {round(point.start.timestamp()) for point in series.points}
+
+
+def _require_single_appliance_for_initial_cost(
+    selections: tuple[_ApplianceSelection, ...],
+) -> None:
+    """``initial_cost`` continues exactly one series; more selected is an error."""
+    if len(selections) != 1:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="initial_cost_requires_single_appliance",
+            translation_placeholders={
+                "count": str(len(selections)),
+                "appliances": ", ".join(selection.config.energy_sensor for selection in selections),
+            },
+        )
+
+
+def _require_strict_clean(imports: tuple[_ApplianceImport, ...]) -> None:
+    """Gate: with ``strict`` on, any validation finding aborts the whole call."""
+    findings = [
+        f"{item.selection.config.name}:"
+        f" {len(item.series.missing_price_hours)} missing-price hours,"
+        f" {len(item.series.invalid_energy_hours)} invalid-energy hours"
+        for item in imports
+        if item.series.missing_price_hours or item.series.invalid_energy_hours
+    ]
+    if findings:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="import_strict_findings",
+            translation_placeholders={"findings": "; ".join(findings)},
+        )
+
+
+def _require_points(imports: tuple[_ApplianceImport, ...], start: datetime, end: datetime) -> None:
+    """Gate: a period with no importable points anywhere is refused, not a no-op."""
+    if not any(item.series.points for item in imports):
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="nothing_to_import",
+            translation_placeholders={"start": start.isoformat(), "end": end.isoformat()},
+        )
+
+
+def _require_no_overlap(
+    imports: tuple[_ApplianceImport, ...],
+    cost_stats: dict[str, list[StatisticsRow]],
+) -> None:
+    """Gate: any existing cost row in ``[start, end)`` blocks the whole import."""
+    overlaps = [
+        f"{item.selection.config.name} ({item.selection.statistic_id}):"
+        f" {len(rows)} rows from {_row_start_iso(rows[0])} to {_row_start_iso(rows[-1])}"
+        for item in imports
+        if (rows := cost_stats.get(item.selection.statistic_id))
+    ]
+    if overlaps:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="import_overlap",
+            translation_placeholders={"overlaps": "; ".join(overlaps)},
+        )
+
+
+def _require_continuity(
+    imports: tuple[_ApplianceImport, ...],
+    pre_start_sums: dict[str, float | None],
+    start: datetime,
+) -> None:
+    """Gate: rows before ``start`` need an explicit ``initial_cost`` to continue.
+
+    Called only when ``initial_cost`` is absent — importing on top of an
+    existing series with the default 0 would step the cumulative sum
+    backwards at ``start``. An explicit ``initial_cost: 0`` passes.
+    """
+    details = [
+        f"{item.selection.config.name} ({item.selection.statistic_id}):"
+        f" last pre-start sum {pre_start_sums[item.selection.statistic_id]}"
+        for item in imports
+        if item.selection.statistic_id in pre_start_sums
+    ]
+    if details:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="import_discontinuity",
+            translation_placeholders={"start": start.isoformat(), "details": "; ".join(details)},
+        )
+
+
+def _require_metadata_mirror(
+    imports: tuple[_ApplianceImport, ...],
+    metadata: dict[str, tuple[int, StatisticMetaData]],
+    currency: str,
+) -> None:
+    """Gate: existing cost-id metadata must match the mirror in every field.
+
+    Prevents silently relabeling an existing series: a differing
+    ``unit_of_measurement``, ``mean_type``, ``has_sum``, ``name`` or
+    ``unit_class`` means the statistic id currently holds a series of a
+    different shape, and the import's metadata upsert would rewrite it.
+    """
+    for item in imports:
+        existing = metadata.get(item.selection.statistic_id)
+        if existing is None:
+            continue
+        existing_map: Mapping[str, object] = existing[1]
+        mirror_map: Mapping[str, object] = _cost_metadata(item.selection.statistic_id, currency)
+        differences = [
+            f"{field} {existing_map.get(field)!r} != {mirror_map[field]!r}"
+            for field in _MIRRORED_METADATA_FIELDS
+            if existing_map.get(field) != mirror_map[field]
+        ]
+        if differences:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="cost_statistics_metadata_mismatch",
+                translation_placeholders={
+                    "statistic_id": item.selection.statistic_id,
+                    "differences": "; ".join(differences),
+                },
+            )
+
+
+def _verify_written(
+    imports: tuple[_ApplianceImport, ...],
+    read_back: dict[str, list[StatisticsRow]],
+) -> dict[str, int]:
+    """Count committed rows per statistic id from the re-read; raise on any gap.
+
+    A confirmed row is a re-read row whose start matches a written point's
+    start — on overwrite, pre-existing rows the new series did not touch
+    never inflate the count.
+    """
+    confirmed: dict[str, int] = {}
+    failed: _ApplianceImport | None = None
+    for item in imports:
+        read_keys = {round(row["start"]) for row in read_back.get(item.selection.statistic_id, [])}
+        confirmed[item.selection.statistic_id] = len(_point_keys(item.series) & read_keys)
+        if failed is None and confirmed[item.selection.statistic_id] != len(item.series.points):
+            failed = item
+    if failed is not None:
+        rows_written = ", ".join(
+            f"{item.selection.config.name}:"
+            f" {confirmed[item.selection.statistic_id]}/{len(item.series.points)}"
+            for item in imports
+        )
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="import_verification_failed",
+            translation_placeholders={
+                "appliance": failed.selection.config.name,
+                "expected": str(len(failed.series.points)),
+                "actual": str(confirmed[failed.selection.statistic_id]),
+                "rows_written": rows_written,
+            },
+        )
+    return confirmed
+
+
+def _existing_rows_kept(item: _ApplianceImport, cost_stats: dict[str, list[StatisticsRow]]) -> int:
+    """Pre-existing in-window rows the new series has no point for (kept as-is).
+
+    Derived from the reads already in hand — the overlap read's starts minus
+    the new points' starts — with zero extra I/O.
+    """
+    point_keys = _point_keys(item.series)
+    return sum(
+        1
+        for row in cost_stats.get(item.selection.statistic_id, [])
+        if round(row["start"]) not in point_keys
+    )
+
+
+def _appliance_receipt(
+    item: _ApplianceImport,
+    rows_written: int,
+    existing_rows_kept: int | None,
+) -> dict[str, JsonValueType]:
+    """Build one appliance's import receipt from its preview-shaped summary.
+
+    Preview vocabulary, no rounding anywhere: every figure is projected from
+    the same summary the preview would return for identical inputs, with
+    ``rows_written`` coming from the post-commit re-read.
+    """
+    receipt: dict[str, JsonValueType] = {
+        ATTR_APPLIANCE: item.summary[ATTR_APPLIANCE],
+        CONF_ENERGY_SENSOR: item.summary[CONF_ENERGY_SENSOR],
+        ATTR_STATISTIC_ID: item.summary[ATTR_STATISTIC_ID],
+        ATTR_ROWS_WRITTEN: rows_written,
+        ATTR_FIRST_POINT: item.summary[ATTR_FIRST_POINT],
+        ATTR_LAST_POINT: item.summary[ATTR_LAST_POINT],
+        ATTR_TOTAL_ENERGY_KWH: item.summary[ATTR_TOTAL_ENERGY_KWH],
+        ATTR_TOTAL_COST: item.summary[ATTR_TOTAL_COST],
+        ATTR_END_ENERGY_KWH: item.summary[ATTR_END_ENERGY_KWH],
+        ATTR_MISSING_PRICE_HOURS: item.summary[ATTR_MISSING_PRICE_HOURS],
+        ATTR_INVALID_ENERGY_HOURS: item.summary[ATTR_INVALID_ENERGY_HOURS],
+        ATTR_ENERGY_GAP_HOURS: item.summary[ATTR_ENERGY_GAP_HOURS],
+    }
+    if existing_rows_kept is not None:
+        receipt[ATTR_EXISTING_ROWS_KEPT] = existing_rows_kept
+    return receipt
+
+
+async def _async_handle_import(call: ServiceCall) -> ServiceResponse:
+    """Handle one ``import_backfill`` call.
+
+    Every pre-write gate is evaluated across every selected appliance BEFORE
+    anything is queued: any failure aborts the whole call with nothing
+    written. The write itself is per-appliance — the recorder has no
+    cross-appliance transaction — so a partial outcome is possible and is
+    reported honestly by the post-commit verification; overlap protection
+    makes any re-run safe (committed rows refuse, missing rows import).
+    """
+    hass = call.hass
+    if not call.data[ATTR_CONFIRM]:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="confirm_required",
+        )
+    entry: ApplianceEnergyCostConfigEntry = service.async_get_config_entry(
+        hass, DOMAIN, call.data[ATTR_CONFIG_ENTRY]
+    )
+    runtime = entry.runtime_data
+    start, end = _resolve_period(call)
+    expected_hours = (end - start) // timedelta(hours=1)
+    strict = bool(call.data[ATTR_STRICT])
+    overwrite_existing = bool(call.data[ATTR_OVERWRITE_EXISTING])
+    raw_initial_cost: float | None = call.data.get(ATTR_INITIAL_COST)
+    selections = _selected_appliances(hass, entry, call)
+    if raw_initial_cost is not None:
+        _require_single_appliance_for_initial_cost(selections)
+    # Decimal(str(...)) once at the boundary, exactly like every other float.
+    initial_cost = Decimal("0") if raw_initial_cost is None else Decimal(str(raw_initial_cost))
+
+    source_ids = {runtime.price_sensor} | {
+        selection.config.energy_sensor for selection in selections
+    }
+    cost_ids = {selection.statistic_id for selection in selections}
+    metadata, source_stats, cost_stats, pre_start_sums = await get_instance(
+        hass
+    ).async_add_executor_job(_fetch_import_statistics, hass, start, end, source_ids, cost_ids)
+
+    price_unit = _validated_price_unit(metadata, runtime)
+    _validate_energy_metadata(metadata, selections)
+
+    previews = tuple(
+        _AppliancePreview(
+            selection=selection,
+            energy_rows=_narrow_energy_rows(source_stats.get(selection.config.energy_sensor, [])),
+        )
+        for selection in selections
+    )
+    price_rows = _narrow_price_rows(source_stats.get(runtime.price_sensor, []))
+    imports = await hass.async_add_executor_job(
+        _compute_import_payloads,
+        previews,
+        price_rows,
+        price_unit.denominator,
+        expected_hours,
+        initial_cost,
+    )
+
+    # Pre-write gates: all of them, across all selected appliances, before
+    # anything is queued. Any failure means nothing was written.
+    if strict:
+        _require_strict_clean(imports)
+    _require_points(imports, start, end)
+    if not overwrite_existing:
+        _require_no_overlap(imports, cost_stats)
+    if raw_initial_cost is None:
+        _require_continuity(imports, pre_start_sums, start)
+    _require_metadata_mirror(imports, metadata, runtime.currency)
+
+    # One synchronous no-await block: nothing can interleave between the
+    # gates above and the queueing below. Zero-point appliances are skipped
+    # entirely — even an empty import would still write a metadata row.
+    for item in imports:
+        if item.series.points:
+            async_import_statistics(
+                hass,
+                _cost_metadata(item.selection.statistic_id, runtime.currency),
+                item.payload,
+            )
+
+    # Fence before the read-back: the sync block_till_done queues a wait
+    # task BEHIND the import tasks and blocks (off-loop, on an executor
+    # thread) until it runs — every queued import has then committed its
+    # own session. The async variant cannot be used here: it returns
+    # immediately when the queue looks empty, which races an import task
+    # the recorder thread has already dequeued but not yet committed.
+    instance = get_instance(hass)
+    await hass.async_add_executor_job(instance.block_till_done)
+    read_back = await instance.async_add_executor_job(
+        _read_back_cost_stats, hass, start, end, cost_ids
+    )
+    confirmed = _verify_written(imports, read_back)
+    _LOGGER.info(
+        "Imported backfill %s - %s: %s",
+        start.isoformat(),
+        end.isoformat(),
+        "; ".join(
+            f"{item.selection.statistic_id}: {confirmed[item.selection.statistic_id]} rows"
+            for item in imports
+        ),
+    )
+
+    if not call.return_response:
+        return None
+    receipts: list[JsonValueType] = [
+        _appliance_receipt(
+            item,
+            confirmed[item.selection.statistic_id],
+            _existing_rows_kept(item, cost_stats) if overwrite_existing else None,
+        )
+        for item in imports
+    ]
+    return {
+        ATTR_START: start.isoformat(),
+        ATTR_END: end.isoformat(),
+        ATTR_STRICT: strict,
+        ATTR_OVERWRITE_EXISTING: overwrite_existing,
+        ATTR_INITIAL_COST: float(initial_cost),
+        CONF_CURRENCY: runtime.currency,
+        CONF_PRICE_SENSOR: runtime.price_sensor,
+        ATTR_APPLIANCES: receipts,
+    }
+
+
 @callback
 def async_setup_services(hass: HomeAssistant) -> None:
     """Register the integration's services. Called once, from ``async_setup``."""
@@ -471,4 +1017,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
         _async_handle_preview,
         schema=PREVIEW_SCHEMA,
         supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_IMPORT_BACKFILL,
+        _async_handle_import,
+        schema=IMPORT_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )

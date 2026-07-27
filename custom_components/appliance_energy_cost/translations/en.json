@@ -73,6 +73,44 @@
           "description": "When on, ok is false if any appliance has missing-price or invalid-energy hours, so findings must be resolved or consciously accepted before importing. When off, ok stays true and the findings are reported only in the per-appliance counts and ranges."
         }
       }
+    },
+    "import_backfill": {
+      "name": "Import backfill",
+      "description": "Writes the reconstructed historical cost series into long-term statistics. Requires an explicit confirm: true — without it nothing is written. Existing rows in the period block the import by default; overwrite_existing updates the window's matching hourly rows for this integration's own cost series — hours where the new series has no point keep their existing rows. Imports hourly rows in UTC, into long-term statistics only. Never calibrates live cost sensors — joining the live series to imported history is the separate calibration service. Removing the integration does not delete imported rows. Price history is interpreted in the price series' current unit; if the price sensor's unit changed mid-history, older previewed figures are wrong — sanity-check the totals. The response is returned only after the rows are committed and re-read from the database.",
+      "fields": {
+        "config_entry": {
+          "name": "Config entry",
+          "description": "The Appliance Energy Cost entry whose appliances are imported."
+        },
+        "start": {
+          "name": "Start",
+          "description": "Start of the period, inclusive. Must be a top-of-the-hour UTC instant; a value with a timezone is converted to UTC, a value without one is interpreted in the Home Assistant timezone, and after conversion minutes, seconds and microseconds must be zero."
+        },
+        "end": {
+          "name": "End",
+          "description": "End of the period, exclusive. Same top-of-the-hour UTC rule as start; must be after start and not in the future. Defaults to the start of the current UTC hour, so a partial hour is never included."
+        },
+        "appliances": {
+          "name": "Appliances",
+          "description": "Limit the import to the appliances using these energy sensors. Default: every appliance in the entry. Required narrowing when supplying initial_cost, and the recovery path after a partial multi-appliance outcome."
+        },
+        "strict": {
+          "name": "Strict",
+          "description": "When on, the import aborts if any appliance has missing-price or invalid-energy hours. When off, flagged hours are skipped and reported in the receipt — skipped hours' consumption is never costed, a permanent under-count for the period."
+        },
+        "confirm": {
+          "name": "Confirm",
+          "description": "Must be true for anything to be written. The requirement exists so a pasted preview call can never write history by accident; run preview_backfill first to inspect what would be written."
+        },
+        "overwrite_existing": {
+          "name": "Overwrite existing",
+          "description": "Proceed although the cost series already has rows in the period, updating the window's matching hourly rows for this integration's own cost series. Hours where the new series has no point keep their existing rows; rows outside the period are never touched; there is no deletion path."
+        },
+        "initial_cost": {
+          "name": "Initial cost",
+          "description": "Cumulative cost immediately before start, for continuing an existing series (default 0; negative values are valid). Requires exactly one selected appliance — one import call per appliance when supplying it. A wrong value makes the series step at start."
+        }
+      }
     }
   },
   "exceptions": {
@@ -105,6 +143,30 @@
     },
     "energy_statistics_unit_unsupported": {
       "message": "The stored statistics unit {unit} of appliance {appliance}'s energy sensor {energy_sensor} is not supported. Expected Wh, kWh or MWh."
+    },
+    "confirm_required": {
+      "message": "This service writes historical cost rows into long-term statistics. Run preview_backfill first to inspect what would be written, then call again with confirm: true. Nothing was written."
+    },
+    "initial_cost_requires_single_appliance": {
+      "message": "initial_cost is the pre-start cumulative cost of exactly one appliance's series, but this call selects {count} appliances ({appliances}). Make one import call per appliance when supplying initial_cost, narrowing with the appliances filter. Nothing was written."
+    },
+    "import_strict_findings": {
+      "message": "Strict import aborted on validation findings — {findings}. Preview the flagged ranges with preview_backfill, narrow the period, exclude appliances with the appliances filter, or set strict: false to consciously accept the findings; skipped hours' consumption is never costed. Nothing was written."
+    },
+    "nothing_to_import": {
+      "message": "No importable hourly points between {start} and {end} for the selected appliances. Run preview_backfill to see what the period contains. Nothing was written."
+    },
+    "import_overlap": {
+      "message": "Existing rows in the cost series block the import — {overlaps} (UTC). Narrow the period to hours without existing rows, or set overwrite_existing: true to update the matching hours in place. Nothing was written."
+    },
+    "import_discontinuity": {
+      "message": "The cost series already has rows before {start} — {details}. Importing on top of them with the default initial_cost 0 would step the series at start. Supply initial_cost with the pre-start cumulative sum to continue the series (one import call per appliance), or re-run the preview and import from the true start of the series. Nothing was written."
+    },
+    "cost_statistics_metadata_mismatch": {
+      "message": "The existing statistics metadata of {statistic_id} does not match the cost series this integration writes: {differences}. Importing would relabel the existing series. Nothing was written."
+    },
+    "import_verification_failed": {
+      "message": "{expected} rows expected, {actual} confirmed for {appliance}. The write may still complete in the background, or may have failed permanently (check the Home Assistant log). Re-running the same import is safe: if the rows landed later, overlap protection refuses and nothing is double-written; if they never landed, the re-run imports them. Confirmed rows per appliance: {rows_written}. After a partial multi-appliance outcome, re-run with the appliances filter narrowed to the appliances missing rows."
     }
   },
   "config_subentries": {
