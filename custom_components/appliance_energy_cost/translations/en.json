@@ -1,3 +1,89 @@
 {
-  "title": "Appliance Energy Cost"
+  "title": "Appliance Energy Cost",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Price sensor",
+        "description": "Pair one all-inclusive dynamic price sensor with a currency. Every appliance added to this entry is costed against this price at the moment of consumption.",
+        "data": {
+          "price_sensor": "Price sensor",
+          "currency": "Currency"
+        },
+        "data_description": {
+          "price_sensor": "All-inclusive price per energy unit, for example EUR/kWh or EUR/MWh. The integration converts units but never adds fees, VAT, or margins — this sensor is the only price authority.",
+          "currency": "Must match the price sensor's unit numerator exactly. The currency is immutable after creation: to change it, remove this entry and add it again (a mixed-currency cost series would corrupt statistics)."
+        }
+      },
+      "confirm_no_statistics": {
+        "title": "No hourly statistics for this price sensor",
+        "description": "{price_sensor} does not declare state_class: measurement, so Home Assistant records no hourly mean statistics for it. Live costing works; the historical backfill will not. Submit to continue anyway."
+      },
+      "reconfigure": {
+        "title": "Reconfigure price sensor",
+        "description": "Change the price sensor of this entry. The currency is immutable: to change it, remove this entry and add it again (a mixed-currency cost series would corrupt statistics).",
+        "data": {
+          "price_sensor": "Price sensor"
+        },
+        "data_description": {
+          "price_sensor": "All-inclusive price per energy unit, for example EUR/kWh or EUR/MWh. The integration converts units but never adds fees, VAT, or margins — this sensor is the only price authority."
+        }
+      }
+    },
+    "error": {
+      "price_sensor_unavailable": "The selected price sensor is unavailable. Its current state is needed to validate the unit; try again when it has a value.",
+      "price_not_numeric": "The price sensor's state '{state}' is not numeric.",
+      "price_unit_unsupported": "The price sensor's unit '{unit}' is not supported. Expected a per-energy price such as EUR/kWh, EUR/MWh or EUR/Wh.",
+      "currency_mismatch": "Price unit numerator '{numerator}' does not match currency '{currency}'. This integration never rescales prices (a subunit price like snt/kWh would be 100x off) — point it at a sensor in {currency}/kWh or {currency}/MWh."
+    },
+    "abort": {
+      "already_configured": "A config entry for this price sensor already exists.",
+      "reconfigure_successful": "Reconfiguration was successful."
+    }
+  },
+  "config_subentries": {
+    "appliance": {
+      "entry_type": "Appliance",
+      "initiate_flow": {
+        "user": "Add appliance",
+        "reconfigure": "Reconfigure appliance"
+      },
+      "step": {
+        "user": {
+          "title": "Add appliance",
+          "description": "Name the appliance and pick its existing cumulative energy sensor. The appliance's cost sensor prices consumed energy at the price in force at the moment of consumption.",
+          "data": {
+            "name": "Name",
+            "energy_sensor": "Energy sensor"
+          },
+          "data_description": {
+            "name": "Display name for the appliance and its cost sensor.",
+            "energy_sensor": "An existing cumulative energy sensor in Wh, kWh or MWh with state_class total or total_increasing. Only energy this sensor has already measured is costed."
+          }
+        },
+        "reconfigure": {
+          "title": "Reconfigure appliance",
+          "description": "Rename the appliance or swap its energy sensor. Swapping keeps the accumulated cost and re-baselines from the new sensor's current reading.",
+          "data": {
+            "name": "Name",
+            "energy_sensor": "Energy sensor"
+          },
+          "data_description": {
+            "name": "Display name for the appliance and its cost sensor.",
+            "energy_sensor": "An existing cumulative energy sensor in Wh, kWh or MWh with state_class total or total_increasing. Only energy this sensor has already measured is costed."
+          }
+        }
+      },
+      "error": {
+        "energy_sensor_unavailable": "The selected energy sensor is unavailable. Its current state is needed to validate the unit; try again when it has a value.",
+        "energy_unit_unsupported": "The energy sensor's unit '{unit}' is not supported. Expected Wh, kWh or MWh.",
+        "energy_not_cumulative": "Only cumulative energy sensors (state_class total or total_increasing) can be costed; a power or per-period sensor would corrupt the figures.",
+        "energy_not_numeric": "The energy sensor's state '{state}' is not numeric.",
+        "duplicate_energy_sensor": "'{other_appliance}' already uses this energy sensor in this entry."
+      },
+      "abort": {
+        "already_configured": "An appliance for this energy sensor already exists in this entry.",
+        "reconfigure_successful": "Reconfiguration was successful."
+      }
+    }
+  }
 }
