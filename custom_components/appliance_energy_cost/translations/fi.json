@@ -1,0 +1,89 @@
+{
+  "title": "Appliance Energy Cost",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Hinta-anturi",
+        "description": "Yhdistä yksi kokonaishinnan kertova dynaaminen hinta-anturi ja valuutta. Jokainen tähän merkintään lisätty laite hinnoitellaan tällä hinnalla kulutushetkellä.",
+        "data": {
+          "price_sensor": "Hinta-anturi",
+          "currency": "Valuutta"
+        },
+        "data_description": {
+          "price_sensor": "Kokonaishinta energiayksikköä kohden, esimerkiksi EUR/kWh tai EUR/MWh. Integraatio muuntaa yksiköitä, mutta ei koskaan lisää maksuja, arvonlisäveroa tai marginaaleja — tämä anturi on ainoa hinnan lähde.",
+          "currency": "On vastattava täsmälleen hinta-anturin yksikön osoittajaa. Valuuttaa ei voi muuttaa luonnin jälkeen: vaihtaaksesi valuutan poista tämä merkintä ja lisää se uudelleen (sekavaluuttainen kustannussarja turmelisi tilastot)."
+        }
+      },
+      "confirm_no_statistics": {
+        "title": "Hinta-anturille ei tallennu tuntitilastoja",
+        "description": "{price_sensor} ei ilmoita luokkaa state_class: measurement, joten Home Assistant ei tallenna sille tuntikeskiarvotilastoja. Reaaliaikainen hinnoittelu toimii; historian takautuva täyttö ei. Lähetä jatkaaksesi silti."
+      },
+      "reconfigure": {
+        "title": "Muokkaa hinta-anturia",
+        "description": "Vaihda tämän merkinnän hinta-anturi. Valuuttaa ei voi muuttaa: vaihtaaksesi valuutan poista tämä merkintä ja lisää se uudelleen (sekavaluuttainen kustannussarja turmelisi tilastot).",
+        "data": {
+          "price_sensor": "Hinta-anturi"
+        },
+        "data_description": {
+          "price_sensor": "Kokonaishinta energiayksikköä kohden, esimerkiksi EUR/kWh tai EUR/MWh. Integraatio muuntaa yksiköitä, mutta ei koskaan lisää maksuja, arvonlisäveroa tai marginaaleja — tämä anturi on ainoa hinnan lähde."
+        }
+      }
+    },
+    "error": {
+      "price_sensor_unavailable": "Valittu hinta-anturi ei ole saatavilla. Sen nykyinen tila tarvitaan yksikön tarkistamiseen; yritä uudelleen, kun sillä on arvo.",
+      "price_not_numeric": "Hinta-anturin tila '{state}' ei ole numeerinen.",
+      "price_unit_unsupported": "Hinta-anturin yksikkö '{unit}' ei ole tuettu. Odotettiin energiakohtaista hintaa, kuten EUR/kWh, EUR/MWh tai EUR/Wh.",
+      "currency_mismatch": "Hintayksikön osoittaja '{numerator}' ei vastaa valuuttaa '{currency}'. Tämä integraatio ei koskaan skaalaa hintoja (alayksikköhinta kuten snt/kWh olisi 100-kertaisesti pielessä) — osoita se anturiin, jonka yksikkö on {currency}/kWh tai {currency}/MWh."
+    },
+    "abort": {
+      "already_configured": "Tälle hinta-anturille on jo olemassa merkintä.",
+      "reconfigure_successful": "Uudelleenmääritys onnistui."
+    }
+  },
+  "config_subentries": {
+    "appliance": {
+      "entry_type": "Laite",
+      "initiate_flow": {
+        "user": "Lisää laite",
+        "reconfigure": "Muokkaa laitetta"
+      },
+      "step": {
+        "user": {
+          "title": "Lisää laite",
+          "description": "Nimeä laite ja valitse sen olemassa oleva kumulatiivinen energia-anturi. Laitteen kustannusanturi hinnoittelee kulutetun energian kulutushetkellä voimassa olevalla hinnalla.",
+          "data": {
+            "name": "Nimi",
+            "energy_sensor": "Energia-anturi"
+          },
+          "data_description": {
+            "name": "Laitteen ja sen kustannusanturin näyttönimi.",
+            "energy_sensor": "Olemassa oleva kumulatiivinen energia-anturi yksikössä Wh, kWh tai MWh, jonka state_class on total tai total_increasing. Vain tämän anturin jo mittaama energia hinnoitellaan."
+          }
+        },
+        "reconfigure": {
+          "title": "Muokkaa laitetta",
+          "description": "Nimeä laite uudelleen tai vaihda sen energia-anturi. Vaihto säilyttää kertyneen kustannuksen ja aloittaa laskennan uuden anturin nykyisestä lukemasta.",
+          "data": {
+            "name": "Nimi",
+            "energy_sensor": "Energia-anturi"
+          },
+          "data_description": {
+            "name": "Laitteen ja sen kustannusanturin näyttönimi.",
+            "energy_sensor": "Olemassa oleva kumulatiivinen energia-anturi yksikössä Wh, kWh tai MWh, jonka state_class on total tai total_increasing. Vain tämän anturin jo mittaama energia hinnoitellaan."
+          }
+        }
+      },
+      "error": {
+        "energy_sensor_unavailable": "Valittu energia-anturi ei ole saatavilla. Sen nykyinen tila tarvitaan yksikön tarkistamiseen; yritä uudelleen, kun sillä on arvo.",
+        "energy_unit_unsupported": "Energia-anturin yksikkö '{unit}' ei ole tuettu. Odotettiin Wh, kWh tai MWh.",
+        "energy_not_cumulative": "Vain kumulatiivisia energia-antureita (state_class total tai total_increasing) voidaan hinnoitella; teho- tai jaksokohtainen anturi turmelisi luvut.",
+        "energy_not_numeric": "Energia-anturin tila '{state}' ei ole numeerinen.",
+        "duplicate_energy_sensor": "'{other_appliance}' käyttää jo tätä energia-anturia tässä merkinnässä."
+      },
+      "abort": {
+        "already_configured": "Tälle energia-anturille on jo laite tässä merkinnässä.",
+        "reconfigure_successful": "Uudelleenmääritys onnistui."
+      }
+    }
+  }
+}

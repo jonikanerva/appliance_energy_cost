@@ -9,6 +9,7 @@ import pytest
 from custom_components.appliance_energy_cost.units import (
     EnergyUnit,
     PriceUnit,
+    currency_matches,
     parse_energy_unit,
     parse_price_unit,
     to_kwh,
@@ -87,3 +88,36 @@ def test_price_unit_parsing_preserves_the_numerator(
 @pytest.mark.parametrize("raw", ["EUR/GJ", "EUR", "/kWh", " / kWh", "", None])
 def test_unsupported_price_units_fail_closed(raw: str | None) -> None:
     assert parse_price_unit(raw) is None
+
+
+@pytest.mark.parametrize(
+    ("numerator", "currency"),
+    [
+        ("EUR", "EUR"),
+        ("eur", "EUR"),
+        ("Eur", "EUR"),
+        ("  EUR  ", "EUR"),
+        ("EUR", " eur "),
+    ],
+)
+def test_currency_matches_is_case_and_whitespace_insensitive(numerator: str, currency: str) -> None:
+    assert currency_matches(numerator, currency)
+
+
+@pytest.mark.parametrize(
+    ("numerator", "currency"),
+    [
+        ("SEK", "EUR"),
+        # v1 strictness (binding, see issue #14): a subunit numerator never
+        # matches — silently accepting snt/kWh against EUR would make every
+        # cost figure 100x off, and the integration never rescales prices.
+        ("snt", "EUR"),
+        ("c", "EUR"),
+        # A currency symbol never matches either; issue #14 owns any future
+        # symbol-equivalence map.
+        ("€", "EUR"),
+        ("", "EUR"),
+    ],
+)
+def test_currency_mismatches_fail_closed(numerator: str, currency: str) -> None:
+    assert not currency_matches(numerator, currency)
