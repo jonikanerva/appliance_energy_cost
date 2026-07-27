@@ -10,9 +10,9 @@ package = false
 [dependency-groups]
 # pytest-homeassistant-custom-component is the pin owner for the HA-tracking set:
 # it hard-pins homeassistant==2026.7.4, pytest==9.0.3, pytest-asyncio==1.4.0,
-# syrupy==5.3.2 and freezegun==1.5.5. Those five are deliberately unbounded here
-# so a single pytest-homeassistant-custom-component bump moves the whole set
-# atomically; uv.lock records the resolved versions.
+# syrupy==5.3.2, freezegun==1.5.5 and pytest-cov==7.1.0. Those six are
+# deliberately unbounded here so a single pytest-homeassistant-custom-component
+# bump moves the whole set atomically; uv.lock records the resolved versions.
 dev = [
     "pytest-homeassistant-custom-component==0.13.348",
     "homeassistant",
@@ -20,6 +20,7 @@ dev = [
     "pytest-asyncio",
     "syrupy",
     "freezegun",
+    "pytest-cov",
     "ruff==0.16.0",
     "mypy==2.3.0",
 ]
@@ -54,3 +55,13 @@ explicit_package_bases = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+# Coverage is part of the declared test gate (STACK.md section 3): configured
+# here, never via ad-hoc command flags, so bare `uv run pytest` measures it
+# identically everywhere. `# pragma: no cover` is banned as gap-hiding.
+addopts = "--cov=custom_components --cov-report=term-missing"
+
+[tool.coverage.report]
+# Locked at the quality-scale test-coverage bar (95), not at the measured
+# number (98% aggregate on 2026-07-28, issue #23 adjudication), so the gate
+# does not ratchet with routine changes.
+fail_under = 95
