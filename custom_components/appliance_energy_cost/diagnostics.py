@@ -58,6 +58,10 @@ TO_REDACT: Final[frozenset[str]] = frozenset(
         CONF_NAME,
         ATTR_FRIENDLY_NAME,
         ATTR_ENTITY_ID,
+        # The registry uuid pins the baseline's meter identity in the restore
+        # payload; a bug report needs its presence (None stays visible as
+        # null), never its value — same treatment as the entity ids above.
+        "source_entity_uuid",
     }
 )
 

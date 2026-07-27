@@ -80,13 +80,12 @@ rules:
 
   # Gold
   devices:
-    status: todo
+    status: done
     comment: >-
-      Not exempt — core's exemption precedents cover integrations with no
-      entities, which does not apply here. The intended shape (attach each
-      cost sensor to its energy source's device, utility_meter-style) is
-      coupled with issue #14's device-linking + rename-tracking unit and
-      tracked in issue #23.
+      Link-not-create (issue #28): each cost sensor attaches to its energy
+      source's existing device via async_entity_id_to_device, derivative-
+      style. The integration never creates or owns devices, and device-less
+      sources stay device-less by design.
   diagnostics: done
   discovery-update-info:
     status: exempt
@@ -110,8 +109,10 @@ rules:
   dynamic-devices:
     status: exempt
     comment: >-
-      No devices are created; this exemption holds only while the devices
-      rule is unimplemented — revisit with issues #23/#14.
+      No devices are created or owned — cost sensors link to their source's
+      existing device, and the link follows the source via the entity
+      registry tracker (a device move or rename reloads the entry and the
+      link re-derives at registration).
   entity-category:
     status: exempt
     comment: >-
@@ -137,12 +138,16 @@ rules:
     comment: >-
       All failure modes are runtime source-sensor states already surfaced on
       the cost entity (unavailable / price_gap_active) and edge-logged per
-      the fail-visibly principle; v1 raises no repair issues.
+      the fail-visibly principle; a removed source entity likewise surfaces
+      as the cost sensor going unavailable with a logged warning naming
+      reconfigure as the repair. v1 raises no repair issues.
   stale-devices:
     status: exempt
     comment: >-
-      No devices are created; this exemption holds only while the devices
-      rule is unimplemented — revisit with issues #23/#14.
+      No devices are created or owned, so no integration-owned device can go
+      stale — a removed source device belongs to its own integration, and
+      the cost sensor's link re-derives (to None) at the reload the registry
+      tracker triggers.
 
   # Platinum
   async-dependency:

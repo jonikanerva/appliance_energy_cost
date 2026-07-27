@@ -251,6 +251,79 @@ async def test_restart_restore_prices_downtime_delta_at_returning_price(
     assert _cost(hass) == Decimal("6.200")
 
 
+async def test_pre_upgrade_restore_payload_restores_cost_and_baseline(
+    hass: HomeAssistant,
+) -> None:
+    """A payload written before issue #28 (no uuid key) restores unchanged.
+
+    The source IS in the registry, so the current uuid exists — but the
+    stored payload carries no uuid, and the legacy entity-id rule must
+    decide: ids match, so cost AND baseline survive the upgrade boot.
+    """
+    er.async_get(hass).async_get_or_create(
+        "sensor", "test", "meter-a", suggested_object_id="heat_pump_energy"
+    )
+    mock_restore_cache_with_extra_data(
+        hass,
+        [
+            (
+                State(COST_ENTITY, "5.000"),
+                {
+                    "cost": "5.000",
+                    "last_energy_kwh": "100.0",
+                    "energy_sensor": ENERGY_SENSOR,
+                },
+            )
+        ],
+    )
+    hass.states.async_set(PRICE_SENSOR, "0.30", _price_attrs())
+    hass.states.async_set(ENERGY_SENSOR, "104.0", _energy_attrs())
+    await _setup_entry(hass)
+
+    # Baseline kept: the 4 kWh consumed across the upgrade restart charges.
+    assert _cost(hass) == Decimal("5.000") + Decimal("4.0") * Decimal("0.30")
+
+
+async def test_uuid_mismatch_with_matching_entity_ids_drops_the_baseline(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Same entity_id but a different registry uuid is a different meter.
+
+    The uuid REPLACES the entity-id comparison when both sides have one:
+    a meter replaced under an unchanged entity_id must re-baseline, or the
+    old meter's baseline would fabricate cost against the new meter.
+    """
+    caplog.set_level(logging.INFO)
+    er.async_get(hass).async_get_or_create(
+        "sensor", "test", "meter-b", suggested_object_id="heat_pump_energy"
+    )
+    mock_restore_cache_with_extra_data(
+        hass,
+        [
+            (
+                State(COST_ENTITY, "5.000"),
+                {
+                    "cost": "5.000",
+                    "last_energy_kwh": "100.0",
+                    "energy_sensor": ENERGY_SENSOR,
+                    "source_entity_uuid": "uuid-of-the-old-meter",
+                },
+            )
+        ],
+    )
+    hass.states.async_set(PRICE_SENSOR, "0.30", _price_attrs())
+    hass.states.async_set(ENERGY_SENSOR, "104.0", _energy_attrs())
+    await _setup_entry(hass)
+
+    # Cost kept, baseline dropped: 104.0 re-baselines without charging.
+    assert _cost(hass) == Decimal("5.000")
+    assert any("was replaced" in r.message for r in _integration_records(caplog, logging.INFO))
+
+    hass.states.async_set(ENERGY_SENSOR, "106.0", _energy_attrs())
+    await hass.async_block_till_done()
+    assert _cost(hass) == Decimal("5.000") + Decimal("2.0") * Decimal("0.30")
+
+
 async def test_price_change_settles_at_the_old_price_first(hass: HomeAssistant) -> None:
     """Settled energy stays at its period's price; later reports use the new price."""
     hass.states.async_set(PRICE_SENSOR, "0.50", _price_attrs())
@@ -540,6 +613,41 @@ async def test_restore_falls_back_to_the_state_string_on_corrupt_extra_data(
     hass.states.async_set(ENERGY_SENSOR, "106.0", _energy_attrs())
     await hass.async_block_till_done()
     assert _cost(hass) == Decimal("8.25")
+
+
+async def test_restore_rejects_a_payload_with_a_malformed_uuid(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A present-but-non-string uuid rejects the whole payload (all-or-nothing).
+
+    Only a MISSING uuid key is the tolerated pre-upgrade shape; a malformed
+    value means the payload cannot be trusted, so the state-string fallback
+    takes over — cost kept, baseline dropped.
+    """
+    mock_restore_cache_with_extra_data(
+        hass,
+        [
+            (
+                State(COST_ENTITY, "7.25"),
+                {
+                    "cost": "7.25",
+                    "last_energy_kwh": "100.0",
+                    "energy_sensor": ENERGY_SENSOR,
+                    "source_entity_uuid": 12345,
+                },
+            )
+        ],
+    )
+    hass.states.async_set(PRICE_SENSOR, "0.50", _price_attrs())
+    hass.states.async_set(ENERGY_SENSOR, "104.0", _energy_attrs())
+    await _setup_entry(hass)
+
+    assert _cost(hass) == Decimal("7.25")
+    assert any(
+        "baseline was lost" in record.message
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    )
 
 
 async def test_restore_restarts_at_zero_when_nothing_is_usable(

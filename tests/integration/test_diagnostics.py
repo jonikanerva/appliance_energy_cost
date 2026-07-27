@@ -204,11 +204,13 @@ async def test_content_presence(hass: HomeAssistant, hass_client: ClientSessionG
         "cost": "0.500",
         "last_energy_kwh": "102.0",
         "energy_sensor": REDACTED,
+        "source_entity_uuid": None,
     }
     assert pool["accrual"] == {
         "cost": "1.000",
         "last_energy_kwh": "54.0",
         "energy_sensor": REDACTED,
+        "source_entity_uuid": None,
     }
     sauna_cost = sauna["cost_entity"]
     assert isinstance(sauna_cost, dict)
@@ -262,6 +264,7 @@ async def test_price_gap_active_is_visible(
         "cost": "0",
         "last_energy_kwh": "100.0",
         "energy_sensor": REDACTED,
+        "source_entity_uuid": None,
     }
 
 
@@ -296,6 +299,7 @@ async def test_degraded_sources_resolve_to_explicit_values(
         "cost": "0",
         "last_energy_kwh": None,
         "energy_sensor": REDACTED,
+        "source_entity_uuid": None,
     }
 
     pool_source = pool["source"]

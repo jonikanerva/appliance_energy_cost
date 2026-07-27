@@ -35,6 +35,8 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.device import async_entity_id_to_device
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
@@ -94,7 +96,7 @@ async def async_setup_entry(
             _LOGGER.error("Skipping appliance subentry %s: %s", subentry.subentry_id, err)
             continue
         async_add_entities(
-            [ApplianceCostSensor(entry.runtime_data, subentry.subentry_id, config)],
+            [ApplianceCostSensor(hass, entry.runtime_data, subentry.subentry_id, config)],
             config_subentry_id=subentry.subentry_id,
         )
 
@@ -154,18 +156,20 @@ def _parse_price_state(state: State | None, currency: str) -> _ParsedPrice:
 
 @dataclass(frozen=True, slots=True)
 class CostSensorExtraStoredData(ExtraStoredData):
-    """Restore payload: cost, the baseline, and the baseline's energy sensor.
+    """Restore payload: cost, the baseline, and the baseline's meter identity.
 
     Decimals round-trip as strings — zero float transit — because a float
     detour would drift the very cents this integration exists to get right.
-    The energy sensor id pins WHICH meter the baseline belongs to: the
-    unique_id survives a reconfigure that swaps the energy sensor, and a
-    baseline replayed against a different meter would fabricate cost.
+    The meter identity pins WHICH meter the baseline belongs to: the entity
+    registry uuid survives a source rename (issue #28), the entity id is the
+    fallback for registry-less sources, and a baseline replayed against a
+    different meter would fabricate cost.
     """
 
     cost: Decimal
     last_energy_kwh: Decimal | None
     energy_sensor: str
+    source_entity_uuid: str | None
 
     @override
     def as_dict(self) -> dict[str, str | None]:
@@ -176,6 +180,7 @@ class CostSensorExtraStoredData(ExtraStoredData):
                 None if self.last_energy_kwh is None else str(self.last_energy_kwh)
             ),
             "energy_sensor": self.energy_sensor,
+            "source_entity_uuid": self.source_entity_uuid,
         }
 
     @classmethod
@@ -185,6 +190,13 @@ class CostSensorExtraStoredData(ExtraStoredData):
         A missing key, a non-string value, an unparseable Decimal, or a
         non-finite value rejects the whole payload — a partially restored
         state would be worse than the documented fallback chain.
+
+        One deliberate exception: a missing ``source_entity_uuid`` key decodes
+        as ``None`` instead of rejecting. Payloads written before issue #28
+        never carried the key, and rejecting them would drop every existing
+        install's baseline on upgrade — the exact damage the field exists to
+        prevent. The cost is bounded at one boot at the legacy entity-id
+        same-meter semantics; the first post-upgrade snapshot writes the key.
         """
         if (
             "cost" not in restored
@@ -201,15 +213,33 @@ class CostSensorExtraStoredData(ExtraStoredData):
         raw_energy_sensor = restored["energy_sensor"]
         if not isinstance(raw_energy_sensor, str) or not raw_energy_sensor:
             return None
+        raw_uuid = restored.get("source_entity_uuid")
+        source_entity_uuid: str | None
+        if raw_uuid is None:
+            source_entity_uuid = None
+        elif isinstance(raw_uuid, str) and raw_uuid:
+            source_entity_uuid = raw_uuid
+        else:
+            return None
         raw_baseline = restored["last_energy_kwh"]
         if raw_baseline is None:
-            return cls(cost=cost, last_energy_kwh=None, energy_sensor=raw_energy_sensor)
+            return cls(
+                cost=cost,
+                last_energy_kwh=None,
+                energy_sensor=raw_energy_sensor,
+                source_entity_uuid=source_entity_uuid,
+            )
         if not isinstance(raw_baseline, str):
             return None
         baseline = parse_finite_decimal(raw_baseline)
         if baseline is None:
             return None
-        return cls(cost=cost, last_energy_kwh=baseline, energy_sensor=raw_energy_sensor)
+        return cls(
+            cost=cost,
+            last_energy_kwh=baseline,
+            energy_sensor=raw_energy_sensor,
+            source_entity_uuid=source_entity_uuid,
+        )
 
 
 # RestoreSensor is deliberately NOT used: its async_get_last_sensor_data
@@ -224,12 +254,12 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
     # deliberately never set: negative prices legally decrease the total.
     _attr_state_class = SensorStateClass.TOTAL
     _attr_has_entity_name = True
-    _attr_translation_key = "cost"
     _attr_should_poll = False
     _attr_suggested_display_precision = 2
 
     def __init__(
         self,
+        hass: HomeAssistant,
         runtime: EntryRuntimeData,
         subentry_id: str,
         config: ApplianceConfig,
@@ -239,11 +269,25 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
         # subentry_id — immutable across rename and reconfigure — so
         # RestoreEntity state and long-term statistics survive both.
         self._attr_unique_id = subentry_id
-        self._attr_translation_placeholders = {"appliance": config.name}
+        # Link-not-create (issue #28): attach to the energy source's existing
+        # device when it has one; None-safe for device-less or unregistered
+        # sources. The device registry is never written.
+        self.device_entry = async_entity_id_to_device(hass, config.energy_sensor)
+        if self.device_entry is None:
+            # The device-less name carries the appliance name itself; the
+            # device-linked name must not (core prefixes the device name, and
+            # "{appliance} {appliance} cost" would stutter). Core validates
+            # placeholder agreement, so the placeholders exist only on the
+            # branch whose translation declares them.
+            self._attr_translation_key = "cost_standalone"
+            self._attr_translation_placeholders = {"appliance": config.name}
+        else:
+            self._attr_translation_key = "cost"
         self._attr_native_unit_of_measurement = runtime.currency
         self._currency = runtime.currency
         self._price_sensor = runtime.price_sensor
         self._energy_sensor = config.energy_sensor
+        self._source_entity_uuid: str | None = None
         self._accrual = INITIAL_STATE
         # Edge guards — INVARIANT: every repeating degraded condition logs
         # on the transition into it only, never per event. Gap start/end are
@@ -279,11 +323,12 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
     @property
     @override
     def extra_restore_state_data(self) -> CostSensorExtraStoredData:
-        """Persist the cost, the baseline, and the baseline's energy sensor."""
+        """Persist the cost, the baseline, and the baseline's meter identity."""
         return CostSensorExtraStoredData(
             cost=self._accrual.cost,
             last_energy_kwh=self._accrual.last_energy_kwh,
             energy_sensor=self._energy_sensor,
+            source_entity_uuid=self._source_entity_uuid,
         )
 
     async def async_added_to_hass(self) -> None:
@@ -295,6 +340,8 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
         # event loop: no await may separate reading the current source states
         # from subscribing, or a source event landing in that window would be
         # missed or applied twice.
+        registry_entry = er.async_get(self.hass).async_get(self._energy_sensor)
+        self._source_entity_uuid = None if registry_entry is None else registry_entry.id
         self._accrual = self._restore_accrual_state(extra_data, last_state)
         parsed_price = _parse_price_state(self.hass.states.get(self._price_sensor), self._currency)
         energy_state = self.hass.states.get(self._energy_sensor)
@@ -318,6 +365,20 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
         # Availability derives solely from the energy source; a price
         # failure is a gap, not unavailability (the settled cost is true).
         self._attr_available = energy_state is not None and energy_state.state != STATE_UNAVAILABLE
+        if not self._attr_available:
+            # Sources may legitimately be down while HA is starting, so this
+            # is a state-based warning, never a registry check (issue #28): a
+            # slow source recovers on its own; a source renamed or removed
+            # while the integration was not loaded stays unavailable until
+            # the appliance is reconfigured — say so once, at setup.
+            _LOGGER.warning(
+                "%s: energy source %s has no usable state at setup — the cost"
+                " sensor is unavailable until the source reports; if the"
+                " source was renamed or removed while this entry was not"
+                " loaded, reconfigure the appliance to repair it",
+                self.entity_id,
+                self._energy_sensor,
+            )
         if self._accrual.price_per_kwh is None:
             # The domain emits no event for a None→None price transition, so
             # a price source dead at startup gets its visibility here — once,
@@ -337,8 +398,8 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
         """Rebuild the accrual state from the previous run (fallback chain).
 
         (1) Intact extra data restores cost and baseline — unless the
-        baseline belongs to a different energy sensor (a reconfigure swap),
-        in which case the cost is kept and the baseline dropped; (2)
+        baseline belongs to a different meter (``_is_same_meter``), in
+        which case the cost is kept and the baseline dropped; (2)
         unusable extra data falls back to the last state string for the
         cost with the baseline dropped — the next reading re-baselines
         without double counting; (3) nothing usable restarts at 0 with the
@@ -350,23 +411,35 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
         if extra_data is not None:
             restored = CostSensorExtraStoredData.from_dict(extra_data.as_dict())
             if restored is not None:
-                if restored.energy_sensor != self._energy_sensor:
-                    # A reconfigure swapped the energy sensor: the baseline
-                    # belongs to the old meter, and replaying it against the
-                    # new meter's reading would fabricate cost (a bogus
-                    # accrual on a higher reading, a bogus METER_RESET
+                if not self._is_same_meter(restored):
+                    # The meter behind this appliance changed (a reconfigure
+                    # swap, or a same-id replacement caught by the uuid): the
+                    # baseline belongs to the old meter, and replaying it
+                    # against the new meter's reading would fabricate cost (a
+                    # bogus accrual on a higher reading, a bogus METER_RESET
                     # charge on a >10% lower one). Keep the cost, drop the
                     # baseline: the next reading re-baselines without
                     # charging (BASELINE_INITIALISED). Logged once, at setup.
-                    _LOGGER.info(
-                        "%s: energy sensor changed from %s to %s — cumulative cost %s"
-                        " kept; the baseline re-initialises from the new sensor's"
-                        " next reading without charging",
-                        self.entity_id,
-                        restored.energy_sensor,
-                        self._energy_sensor,
-                        restored.cost,
-                    )
+                    if restored.energy_sensor != self._energy_sensor:
+                        _LOGGER.info(
+                            "%s: energy sensor changed from %s to %s — cumulative cost %s"
+                            " kept; the baseline re-initialises from the new sensor's"
+                            " next reading without charging",
+                            self.entity_id,
+                            restored.energy_sensor,
+                            self._energy_sensor,
+                            restored.cost,
+                        )
+                    else:
+                        _LOGGER.info(
+                            "%s: the meter behind %s was replaced (its registry entry"
+                            " changed) — cumulative cost %s kept; the baseline"
+                            " re-initialises from the new meter's next reading"
+                            " without charging",
+                            self.entity_id,
+                            self._energy_sensor,
+                            restored.cost,
+                        )
                     return AccrualState(
                         cost=restored.cost,
                         last_energy_kwh=None,
@@ -379,6 +452,28 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
                     last_reading_kwh=restored.last_energy_kwh,
                     price_per_kwh=None,
                 )
+        return self._restore_from_last_state(extra_data, last_state)
+
+    def _is_same_meter(self, restored: CostSensorExtraStoredData) -> bool:
+        """UUID-first same-meter rule (issue #28) — the baseline's identity.
+
+        BINDING precedence: when both the restored and the current registry
+        uuid exist, the uuid alone decides — equal means the same meter even
+        if the entity_id changed (a rename: baseline KEPT), different means a
+        swap even if the entity_id matches (baseline dropped). Only when
+        either uuid is missing (registry-less source, or a pre-#28 payload)
+        does the legacy entity-id comparison decide. Swapping this precedence
+        would silently drop every renamed source's baseline — the rename case
+        is the whole point of the uuid.
+        """
+        if restored.source_entity_uuid is not None and self._source_entity_uuid is not None:
+            return restored.source_entity_uuid == self._source_entity_uuid
+        return restored.energy_sensor == self._energy_sensor
+
+    def _restore_from_last_state(
+        self, extra_data: ExtraStoredData | None, last_state: State | None
+    ) -> AccrualState:
+        """Fallback legs (2) and (3) of the restore chain."""
         if last_state is not None and (cost := parse_finite_decimal(last_state.state)) is not None:
             _LOGGER.warning(
                 "%s: restore data unusable; cumulative cost %s restored from the last"

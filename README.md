@@ -140,8 +140,15 @@ Each appliance is a named pairing with an existing cumulative energy sensor:
 | Energy sensor | An existing cumulative energy sensor in Wh, kWh or MWh with state_class total or total_increasing. Only energy this sensor has already measured is costed. |
 
 Two appliances in the same entry cannot use the same energy sensor. Add more
-appliances at any time with **Add appliance** on the entry page; each one gets
-its own cost sensor named "*Name* cost".
+appliances at any time with **Add appliance** on the entry page. When the
+energy sensor belongs to a device, the cost sensor attaches to that device
+and appears on the source's device page, named "Cost" (friendly name
+"*Device name* Cost"); a device-less source gets a standalone cost sensor
+named "*Name* cost". The integration never creates devices of its own.
+
+One deliberate allowance: two *different entries* may cost the same energy
+sensor under different price sensors (a legitimate price-comparison setup) —
+but summing their cost sensors on a dashboard double-counts the money.
 
 ### Reconfiguring
 
@@ -152,6 +159,14 @@ its own cost sensor named "*Name* cost".
   keeps the accumulated cost and re-baselines from the new sensor's current
   reading — the baseline belongs to the old meter, so the next reading from
   the new meter re-initialises it without charging.
+
+Renaming a source entity's *entity ID* (in **Settings → Devices & services →
+Entities**) needs no reconfigure: the integration follows renames of the
+price sensor and every appliance's energy sensor automatically while the
+entry is loaded — the configuration updates, the entry reloads once, and the
+accumulated cost and baseline survive. A removed source entity leaves its
+cost sensor unavailable (a removed price source is a price gap) until the
+entry or appliance is reconfigured.
 
 ### Configuration errors
 
@@ -629,6 +644,20 @@ over it with `overwrite_existing: true`.
   Historical days and months come from statistics-graph cards.
 - **Entity IDs follow the instance language** — see the note in
   [Daily and monthly costs](#daily-and-monthly-costs).
+- **Source renames are followed only while the entry is loaded.** Two gaps
+  share one visible state: (1) a source renamed while the integration is not
+  loaded cannot be reconciled afterwards — the configuration stores only the
+  old entity ID, and no old→new map exists once the rename has happened; (2)
+  a second rename landing during the reload window of the first is missed
+  the same way. In both cases the cost sensor is unavailable and a setup
+  warning names the source; reconfiguring the appliance (or entry, for the
+  price sensor) repairs it.
+- **Upgrade note: device-linked friendly names gain the device prefix.**
+  After upgrading to the version with device links, an appliance whose
+  energy sensor belongs to a device renders as "*Device name* Cost" instead
+  of "*Name* cost". This is display-only — entity IDs, unique IDs and
+  long-term statistics are unchanged, and name overrides made in the entity
+  registry survive.
 
 ## Troubleshooting
 
@@ -646,6 +675,10 @@ Log messages (logger: `custom_components.appliance_energy_cost`):
 | `negative cumulative reading from … rejected` (warning) | Out-of-contract source value; nothing charged, baseline held. |
 | `restore data unusable; cumulative cost … restored from the last state` (warning) | After a restart the baseline was lost; the next reading re-baselines without charging. |
 | `restore data unusable and the last state was not numeric; cumulative cost restarts at 0` (warning) | Long-term statistics will record a negative step. |
+| `Price sensor … was renamed to …` (debug) / no log at all after renaming an energy source | A source entity ID rename is followed automatically while the entry is loaded: the configuration updates, the entry reloads once, cost and baseline survive. No action needed. |
+| `Source entity … was removed from the entity registry` (warning) | The cost sensor is unavailable (a removed price source is a price gap). Reconfigure the appliance or entry to point at a replacement sensor. |
+| `… now both track … and their summed cost figures double-count` (error) | A rename made two appliances point at the same energy sensor. Reconfigure the *other* named appliance to a different sensor first, then reconfigure this one. |
+| `energy source … has no usable state at setup` (warning) | The source is slow to start (recovers by itself once it reports), or it was renamed or removed while the entry was not loaded — reconfigure the appliance to repair that case. |
 
 Service errors, with their remedies:
 
