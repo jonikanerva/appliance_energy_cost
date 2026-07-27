@@ -3,7 +3,7 @@
 # checked 2026-07-27) starts as todo; per-rule analysis is issue #8.
 rules:
   # Bronze
-  action-setup: todo
+  action-setup: done
   appropriate-polling: todo
   brands: todo
   common-modules: todo

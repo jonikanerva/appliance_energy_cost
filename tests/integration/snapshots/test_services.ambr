@@ -1,0 +1,37 @@
+# serializer version: 1
+# name: test_full_response_snapshot_and_json_round_trip
+  dict({
+    'appliances': list([
+      dict({
+        'appliance': 'Heat pump',
+        'end_energy_kwh': 104.0,
+        'energy_gap_hours': 0,
+        'energy_sensor': 'sensor.heat_pump_energy',
+        'first_point': '2026-07-20T00:00:00+00:00',
+        'hourly_points': 2,
+        'invalid_energy_hours': 0,
+        'invalid_energy_ranges': list([
+        ]),
+        'last_point': '2026-07-20T03:00:00+00:00',
+        'missing_price_hours': 2,
+        'missing_price_ranges': list([
+          dict({
+            'end': '2026-07-20T03:00:00+00:00',
+            'start': '2026-07-20T01:00:00+00:00',
+          }),
+        ]),
+        'statistic_id': 'sensor.heat_pump_cost',
+        'total_cost': 0.5,
+        'total_energy_kwh': 2.0,
+        'valid': False,
+      }),
+    ]),
+    'currency': 'EUR',
+    'end': '2026-07-20T04:00:00+00:00',
+    'expected_hours': 4,
+    'ok': False,
+    'price_sensor': 'sensor.electricity_price',
+    'start': '2026-07-20T00:00:00+00:00',
+    'strict': True,
+  })
+# ---

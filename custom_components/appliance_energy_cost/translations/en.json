@@ -47,6 +47,66 @@
       }
     }
   },
+  "services": {
+    "preview_backfill": {
+      "name": "Preview backfill",
+      "description": "Dry run of the historical cost backfill: reads the hourly long-term statistics of the entry's price sensor and appliance energy sensors and returns per-appliance point counts, totals and gaps. Writes nothing — importing is a separate, explicitly confirmed action. An ok result means the source data passed validation at preview time; the import separately enforces overlap protection and re-reads history. Price history is interpreted in the price series' current unit; if the price sensor's unit changed mid-history, older previewed figures are wrong — sanity-check the totals.",
+      "fields": {
+        "config_entry": {
+          "name": "Config entry",
+          "description": "The Appliance Energy Cost entry whose appliances are previewed."
+        },
+        "start": {
+          "name": "Start",
+          "description": "Start of the period, inclusive. Must be a top-of-the-hour UTC instant; a value with a timezone is converted to UTC, a value without one is interpreted in the Home Assistant timezone, and after conversion minutes, seconds and microseconds must be zero."
+        },
+        "end": {
+          "name": "End",
+          "description": "End of the period, exclusive. Same top-of-the-hour UTC rule as start; must be after start and not in the future. Defaults to the start of the current UTC hour, so a partial hour is never included."
+        },
+        "appliances": {
+          "name": "Appliances",
+          "description": "Limit the preview to the appliances using these energy sensors. Default: every appliance in the entry. Also the recovery path when one appliance's missing statistics fail the whole call."
+        },
+        "strict": {
+          "name": "Strict",
+          "description": "When on, ok is false if any appliance has missing-price or invalid-energy hours, so findings must be resolved or consciously accepted before importing. When off, ok stays true and the findings are reported only in the per-appliance counts and ranges."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "period_not_top_of_hour": {
+      "message": "{field} must be a top-of-the-hour UTC instant (minutes, seconds and microseconds zero); got {value}."
+    },
+    "end_not_after_start": {
+      "message": "end must be after start; got start {start} and end {end} in UTC."
+    },
+    "end_in_future": {
+      "message": "end must not be in the future; got {end}, now is {now} in UTC."
+    },
+    "unknown_appliances": {
+      "message": "No appliance in this entry uses these energy sensors: {entity_ids}."
+    },
+    "appliance_subentry_damaged": {
+      "message": "Appliance {subentry} is not usable: its configuration does not decode or its cost sensor is missing from the entity registry. Repair or remove the appliance, or exclude it with the appliances filter."
+    },
+    "price_sensor_no_statistics": {
+      "message": "The price sensor {price_sensor} records no long-term statistics; it needs state_class: measurement. Without hourly mean prices no historical cost can be reconstructed."
+    },
+    "price_statistics_unit_unsupported": {
+      "message": "The stored statistics unit {unit} of price sensor {price_sensor} is not a supported per-energy price unit. Expected a unit such as EUR/kWh or EUR/MWh."
+    },
+    "price_statistics_currency_mismatch": {
+      "message": "The stored statistics unit numerator {numerator} of price sensor {price_sensor} does not match the configured currency {currency}. This integration never rescales prices."
+    },
+    "appliance_no_statistics": {
+      "message": "Appliance {appliance} has no long-term statistics for its energy sensor {energy_sensor}, so no historical cost can be reconstructed for it. Exclude it with the appliances filter to preview the others."
+    },
+    "energy_statistics_unit_unsupported": {
+      "message": "The stored statistics unit {unit} of appliance {appliance}'s energy sensor {energy_sensor} is not supported. Expected Wh, kWh or MWh."
+    }
+  },
   "config_subentries": {
     "appliance": {
       "entry_type": "Appliance",

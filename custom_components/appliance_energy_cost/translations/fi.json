@@ -47,6 +47,66 @@
       }
     }
   },
+  "services": {
+    "preview_backfill": {
+      "name": "Esikatsele takautuva täyttö",
+      "description": "Historiallisen kustannustäytön kuiva-ajo: lukee merkinnän hinta-anturin ja laitteiden energia-antureiden tuntikohtaiset pitkän aikavälin tilastot ja palauttaa laitekohtaiset pistemäärät, summat ja aukot. Ei kirjoita mitään — tuonti on erillinen, erikseen vahvistettava toiminto. Tulos ok tarkoittaa, että lähdedata läpäisi tarkistukset esikatseluhetkellä; tuonti valvoo päällekkäisyyssuojaa ja lukee historian uudelleen erikseen. Hintahistoria tulkitaan hintasarjan nykyisessä yksikössä; jos hinta-anturin yksikkö on vaihtunut kesken historian, vanhemmat esikatsellut luvut ovat väärin — tarkista summien järkevyys.",
+      "fields": {
+        "config_entry": {
+          "name": "Merkintä",
+          "description": "Appliance Energy Cost -merkintä, jonka laitteet esikatsellaan."
+        },
+        "start": {
+          "name": "Alku",
+          "description": "Jakson alku, mukaan lukien. On oltava tasatunti UTC-ajassa; aikavyöhykkeellinen arvo muunnetaan UTC:hen, aikavyöhykkeetön tulkitaan Home Assistantin aikavyöhykkeessä, ja muunnoksen jälkeen minuuttien, sekuntien ja mikrosekuntien on oltava nollia."
+        },
+        "end": {
+          "name": "Loppu",
+          "description": "Jakson loppu, pois lukien. Sama tasatunti-UTC-sääntö kuin alulla; on oltava alun jälkeen eikä tulevaisuudessa. Oletus on kuluvan UTC-tunnin alku, joten vajaata tuntia ei koskaan sisällytetä."
+        },
+        "appliances": {
+          "name": "Laitteet",
+          "description": "Rajaa esikatselu näitä energia-antureita käyttäviin laitteisiin. Oletus: kaikki merkinnän laitteet. Myös toipumisreitti, kun yhden laitteen puuttuvat tilastot kaatavat koko kutsun."
+        },
+        "strict": {
+          "name": "Tiukka",
+          "description": "Päällä ollessaan ok on epätosi, jos jollakin laitteella on puuttuvan hinnan tai virheellisen energian tunteja, joten löydökset on ratkaistava tai tietoisesti hyväksyttävä ennen tuontia. Pois päältä ollessaan ok pysyy totena ja löydökset raportoidaan vain laitekohtaisissa lukumäärissä ja aikaväleissä."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "period_not_top_of_hour": {
+      "message": "Kentän {field} on oltava tasatunti UTC-ajassa (minuutit, sekunnit ja mikrosekunnit nollia); saatiin {value}."
+    },
+    "end_not_after_start": {
+      "message": "Lopun on oltava alun jälkeen; saatiin alku {start} ja loppu {end} UTC-ajassa."
+    },
+    "end_in_future": {
+      "message": "Loppu ei saa olla tulevaisuudessa; saatiin {end}, nyt on {now} UTC-ajassa."
+    },
+    "unknown_appliances": {
+      "message": "Mikään tämän merkinnän laite ei käytä näitä energia-antureita: {entity_ids}."
+    },
+    "appliance_subentry_damaged": {
+      "message": "Laite {subentry} ei ole käyttökelpoinen: sen määritys ei aukea tai sen kustannusanturi puuttuu entiteettirekisteristä. Korjaa tai poista laite, tai rajaa se pois laitesuodattimella."
+    },
+    "price_sensor_no_statistics": {
+      "message": "Hinta-anturille {price_sensor} ei tallennu pitkän aikavälin tilastoja; se tarvitsee luokan state_class: measurement. Ilman tuntikeskiarvohintoja historiallista kustannusta ei voi laskea."
+    },
+    "price_statistics_unit_unsupported": {
+      "message": "Hinta-anturin {price_sensor} tallennettu tilastoyksikkö {unit} ei ole tuettu energiakohtainen hintayksikkö. Odotettiin yksikköä kuten EUR/kWh tai EUR/MWh."
+    },
+    "price_statistics_currency_mismatch": {
+      "message": "Hinta-anturin {price_sensor} tallennetun tilastoyksikön osoittaja {numerator} ei vastaa määritettyä valuuttaa {currency}. Tämä integraatio ei koskaan skaalaa hintoja."
+    },
+    "appliance_no_statistics": {
+      "message": "Laitteella {appliance} ei ole pitkän aikavälin tilastoja energia-anturilleen {energy_sensor}, joten sille ei voi laskea historiallista kustannusta. Rajaa se pois laitesuodattimella esikatsellaksesi muut."
+    },
+    "energy_statistics_unit_unsupported": {
+      "message": "Laitteen {appliance} energia-anturin {energy_sensor} tallennettu tilastoyksikkö {unit} ei ole tuettu. Odotettiin Wh, kWh tai MWh."
+    }
+  },
   "config_subentries": {
     "appliance": {
       "entry_type": "Laite",

@@ -8,12 +8,24 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
+from .const import DOMAIN
 from .models import EntryRuntimeData, decode_entry_config
+from .services import async_setup_services
 
 type ApplianceEnergyCostConfigEntry = ConfigEntry[EntryRuntimeData]
 
 PLATFORMS: Final = [Platform.SENSOR]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the domain services; per-entry wiring lives in async_setup_entry."""
+    async_setup_services(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ApplianceEnergyCostConfigEntry) -> bool:
