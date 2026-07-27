@@ -1,10 +1,13 @@
 name: Validate
 
+# hassfest and HACS validation are the only gates that cannot run locally, so
+# they run in CI against main (release verification + upstream-rule-drift
+# detection). The quality gate ($VERIFY_CMD) is local-first; there is no
+# per-PR CI by product-owner decision (2026-07-27, see issue #1).
 on:
   push:
     branches:
       - main
-  pull_request:
   schedule:
     - cron: "0 4 * * *"
   workflow_dispatch:
