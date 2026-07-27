@@ -31,9 +31,9 @@
     },
     "error": {
       "price_sensor_unavailable": "Valittu hinta-anturi ei ole saatavilla. Sen nykyinen tila tarvitaan yksikön tarkistamiseen; yritä uudelleen, kun sillä on arvo.",
-      "price_not_numeric": "Hinta-anturin tila '{state}' ei ole numeerinen.",
-      "price_unit_unsupported": "Hinta-anturin yksikkö '{unit}' ei ole tuettu. Odotettiin energiakohtaista hintaa, kuten EUR/kWh, EUR/MWh tai EUR/Wh.",
-      "currency_mismatch": "Hintayksikön osoittaja '{numerator}' ei vastaa valuuttaa '{currency}'. Tämä integraatio ei koskaan skaalaa hintoja (alayksikköhinta kuten snt/kWh olisi 100-kertaisesti pielessä) — osoita se anturiin, jonka yksikkö on {currency}/kWh tai {currency}/MWh."
+      "price_not_numeric": "Hinta-anturin tila {state} ei ole numeerinen.",
+      "price_unit_unsupported": "Hinta-anturin yksikkö {unit} ei ole tuettu. Odotettiin energiakohtaista hintaa, kuten EUR/kWh, EUR/MWh tai EUR/Wh.",
+      "currency_mismatch": "Hintayksikön osoittaja {numerator} ei vastaa valuuttaa {currency}. Tämä integraatio ei koskaan skaalaa hintoja (alayksikköhinta kuten snt/kWh olisi 100-kertaisesti pielessä) — osoita se anturiin, jonka yksikkö on {currency}/kWh tai {currency}/MWh."
     },
     "abort": {
       "already_configured": "Tälle hinta-anturille on jo olemassa merkintä.",
@@ -75,10 +75,10 @@
       },
       "error": {
         "energy_sensor_unavailable": "Valittu energia-anturi ei ole saatavilla. Sen nykyinen tila tarvitaan yksikön tarkistamiseen; yritä uudelleen, kun sillä on arvo.",
-        "energy_unit_unsupported": "Energia-anturin yksikkö '{unit}' ei ole tuettu. Odotettiin Wh, kWh tai MWh.",
+        "energy_unit_unsupported": "Energia-anturin yksikkö {unit} ei ole tuettu. Odotettiin Wh, kWh tai MWh.",
         "energy_not_cumulative": "Vain kumulatiivisia energia-antureita (state_class total tai total_increasing) voidaan hinnoitella; teho- tai jaksokohtainen anturi turmelisi luvut.",
-        "energy_not_numeric": "Energia-anturin tila '{state}' ei ole numeerinen.",
-        "duplicate_energy_sensor": "'{other_appliance}' käyttää jo tätä energia-anturia tässä merkinnässä."
+        "energy_not_numeric": "Energia-anturin tila {state} ei ole numeerinen.",
+        "duplicate_energy_sensor": "{other_appliance} käyttää jo tätä energia-anturia tässä merkinnässä."
       },
       "abort": {
         "already_configured": "Tälle energia-anturille on jo laite tässä merkinnässä.",

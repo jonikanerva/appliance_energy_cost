@@ -31,9 +31,9 @@
     },
     "error": {
       "price_sensor_unavailable": "The selected price sensor is unavailable. Its current state is needed to validate the unit; try again when it has a value.",
-      "price_not_numeric": "The price sensor's state '{state}' is not numeric.",
-      "price_unit_unsupported": "The price sensor's unit '{unit}' is not supported. Expected a per-energy price such as EUR/kWh, EUR/MWh or EUR/Wh.",
-      "currency_mismatch": "Price unit numerator '{numerator}' does not match currency '{currency}'. This integration never rescales prices (a subunit price like snt/kWh would be 100x off) — point it at a sensor in {currency}/kWh or {currency}/MWh."
+      "price_not_numeric": "The price sensor's state {state} is not numeric.",
+      "price_unit_unsupported": "The price sensor's unit {unit} is not supported. Expected a per-energy price such as EUR/kWh, EUR/MWh or EUR/Wh.",
+      "currency_mismatch": "Price unit numerator {numerator} does not match currency {currency}. This integration never rescales prices (a subunit price like snt/kWh would be 100x off) — point it at a sensor in {currency}/kWh or {currency}/MWh."
     },
     "abort": {
       "already_configured": "A config entry for this price sensor already exists.",
@@ -75,10 +75,10 @@
       },
       "error": {
         "energy_sensor_unavailable": "The selected energy sensor is unavailable. Its current state is needed to validate the unit; try again when it has a value.",
-        "energy_unit_unsupported": "The energy sensor's unit '{unit}' is not supported. Expected Wh, kWh or MWh.",
+        "energy_unit_unsupported": "The energy sensor's unit {unit} is not supported. Expected Wh, kWh or MWh.",
         "energy_not_cumulative": "Only cumulative energy sensors (state_class total or total_increasing) can be costed; a power or per-period sensor would corrupt the figures.",
-        "energy_not_numeric": "The energy sensor's state '{state}' is not numeric.",
-        "duplicate_energy_sensor": "'{other_appliance}' already uses this energy sensor in this entry."
+        "energy_not_numeric": "The energy sensor's state {state} is not numeric.",
+        "duplicate_energy_sensor": "{other_appliance} already uses this energy sensor in this entry."
       },
       "abort": {
         "already_configured": "An appliance for this energy sensor already exists in this entry.",
