@@ -599,12 +599,17 @@ async def test_previous_month_rows_trip_the_continuity_gate(hass: HomeAssistant)
 async def test_continuity_gate_at_exact_local_month_start(hass: HomeAssistant) -> None:
     """A start exactly at a local month boundary skips the empty hourly read.
 
-    The partial month [month start, start) is empty by construction, so the
-    previous month's last row must be found via the monthly buckets alone;
-    an explicit initial_cost then continues the series across the boundary.
+    The timezone is pinned to UTC because the test harness defaults to
+    US/Pacific, where 2026-07-01 00:00 UTC is NOT a local month start —
+    unpinned, the hourly read would drift and satisfy the gate. Pinned,
+    the partial month [month start, start) is empty by construction, so
+    the previous month's last row must be found via the monthly buckets
+    alone; an explicit initial_cost then continues the series across the
+    boundary.
     """
+    await hass.config.async_set_time_zone("UTC")
     entry = await _setup_entry(hass)
-    month_start = datetime(2026, 7, 1, 0, 0, tzinfo=UTC)  # tests run in UTC
+    month_start = datetime(2026, 7, 1, 0, 0, tzinfo=UTC)
     window = {
         ATTR_START: month_start.isoformat(),
         ATTR_END: (month_start + timedelta(hours=4)).isoformat(),
