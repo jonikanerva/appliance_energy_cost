@@ -28,9 +28,9 @@ Give any existing cumulative energy sensor a cumulative money-cost sensor priced
 ## Product Shape
 
 1. User installs the integration via HACS.
-2. In a UI config flow, the user selects the price sensor and adds appliances (name + existing cumulative energy sensor). Each appliance gets a cost sensor (`device_class: monetary`, `state_class: total`).
-3. Cost sensors accrue money live, survive restarts, and feed long-term statistics — usable in dashboard cards and statistics graphs.
-4. Optionally, the user runs the preview-backfill service, inspects the returned summary (points, totals, gaps), then runs the import service with an explicit confirm — historical cost appears in long-term statistics.
+2. In a UI config flow, the user selects the price sensor and adds appliances (name + existing cumulative energy sensor). The price sensor is an existing numeric all-inclusive sensor (e.g. a Nord Pool sensor with fees included); `state_class: measurement` is required for backfill, because hourly mean statistics are the only price history the backfill can read.
+3. Each appliance gets a new cost sensor created by the integration (`device_class: monetary`, `state_class: total`). Cost sensors accrue money live, survive restarts, and feed long-term statistics — usable in dashboard cards and statistics graphs.
+4. Optionally, the user runs the preview-backfill service, inspects the returned summary (points, totals, gaps), then runs the import service with an explicit confirm — historical cost appears in long-term statistics. History reaches only as far back as both source sensors' hourly statistics.
 5. Daily and monthly cost figures are built with Home Assistant's own `utility_meter` on top of the cost sensors (documented recipe, not reimplemented).
 
 ## Non-Goals & Drift Guardrails
