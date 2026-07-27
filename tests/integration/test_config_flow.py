@@ -20,9 +20,11 @@ from homeassistant.const import (
 from homeassistant.const import CONF_CURRENCY as HA_CONF_CURRENCY
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.appliance_energy_cost import async_setup_entry
+from custom_components.appliance_energy_cost.config_flow import ApplianceEnergyCostConfigFlow
 from custom_components.appliance_energy_cost.const import (
     CONF_CURRENCY,
     CONF_ENERGY_SENSOR,
@@ -395,6 +397,35 @@ async def test_core_unique_id_collision_aborts_as_backstop(
     assert result["reason"] == "already_configured"
 
 
+async def test_non_appliance_subentries_do_not_count_in_the_duplicate_scan(
+    hass: HomeAssistant,
+) -> None:
+    """A foreign-type subentry must be skipped, never matched as an appliance.
+
+    The duplicate scan iterates every stored subentry. A subentry of another
+    type (a future subentry type, or damaged storage) whose data happens to
+    carry the same energy_sensor key is not an appliance — matching it would
+    wrongly block the add with a phantom duplicate.
+    """
+    _set_price_sensor(hass)
+    _set_energy_sensor(hass)
+    entry = await _setup_entry(
+        hass,
+        subentries_data=[
+            ConfigSubentryData(
+                data={CONF_ENERGY_SENSOR: ENERGY_SENSOR},
+                subentry_type="ghost",
+                title="Ghost",
+                unique_id=None,
+            )
+        ],
+    )
+    result = await _add_appliance(hass, entry)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert {subentry.title for subentry in entry.subentries.values()} == {"Ghost", "Heat pump"}
+
+
 async def test_reconfigure_appliance_renames_and_swaps_the_sensor(
     hass: HomeAssistant,
 ) -> None:
@@ -591,3 +622,56 @@ async def test_reconfigure_keeping_the_own_price_sensor_is_not_a_duplicate(
     )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
+
+
+# --- Pending-data guard tripwires -----------------------------------------
+#
+# The three commit-path guards below can never fire through the flow-manager
+# dispatch while the flow is wired correctly: every manager path into the
+# confirm step and the two commit callbacks sets the pending selection first.
+# That is their entire purpose — they are tripwires against a future
+# mis-wiring of the multi-step commit order, and the runtime narrowing that
+# keeps the Optional pending fields honest under mypy --strict. The tests
+# invoke the flow object's methods out of order, contriving exactly the state
+# each guard protects against, and pin that the failure is a loud, typed
+# HomeAssistantError — never a silently created entry with corrupt data.
+
+
+async def test_confirm_step_without_pending_data_fails_loudly(hass: HomeAssistant) -> None:
+    """Entering the warn-confirm step out of order raises, not renders.
+
+    Showing the form here would present a confirm dialog for a selection
+    that does not exist and dead-end the flow on submit.
+    """
+    flow = ApplianceEnergyCostConfigFlow()
+    flow.hass = hass
+    with pytest.raises(
+        HomeAssistantError, match="confirm_no_statistics entered without pending data"
+    ):
+        await flow.async_step_confirm_no_statistics()
+
+
+async def test_entry_creation_without_pending_data_fails_loudly(hass: HomeAssistant) -> None:
+    """Committing entry creation out of order raises, not creates.
+
+    Falling through would create an entry whose price sensor and currency
+    are None — exactly the corrupt-config foot-gun the flow exists to block.
+    """
+    flow = ApplianceEnergyCostConfigFlow()
+    flow.hass = hass
+    with pytest.raises(HomeAssistantError, match="entry creation requested without pending data"):
+        flow._create_pending_entry()
+
+
+async def test_reconfigure_finish_without_pending_data_fails_loudly(hass: HomeAssistant) -> None:
+    """Committing a reconfigure out of order raises, not updates.
+
+    Falling through would overwrite a working entry's price sensor with
+    None behind the user's back.
+    """
+    flow = ApplianceEnergyCostConfigFlow()
+    flow.hass = hass
+    with pytest.raises(
+        HomeAssistantError, match="reconfigure finish requested without pending data"
+    ):
+        flow._finish_reconfigure()

@@ -25,11 +25,11 @@ rules:
       polled data seam. Pure logic lives in dedicated framework-free modules
       (accrual.py, backfill.py, units.py, models.py).
   config-flow-test-coverage:
-    status: todo
+    status: done
     comment: >-
-      Measured 2026-07-28 (issue #23 adjudication): config_flow.py is at 98%
-      per-file (4 of 181 statements missed), below the rule's full-coverage
-      bar; closing the gap with tests is issue #29.
+      Measured 2026-07-28 (issue #29): config_flow.py is at 100% per-file
+      (181 statements, 0 missed) under the pyproject-configured coverage
+      gate that bare `uv run pytest` enforces.
   config-flow: done
   dependency-transparency: done
   docs-actions: done
