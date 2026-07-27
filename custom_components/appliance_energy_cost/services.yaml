@@ -1,0 +1,28 @@
+preview_backfill:
+  fields:
+    config_entry:
+      required: true
+      selector:
+        config_entry:
+          integration: appliance_energy_cost
+    start:
+      required: true
+      selector:
+        datetime:
+    end:
+      required: false
+      selector:
+        datetime:
+    appliances:
+      required: false
+      selector:
+        entity:
+          multiple: true
+          filter:
+            domain: sensor
+            device_class: energy
+    strict:
+      required: false
+      default: true
+      selector:
+        boolean:
