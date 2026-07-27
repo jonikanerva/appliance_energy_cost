@@ -43,6 +43,9 @@
   "entity": {
     "sensor": {
       "cost": {
+        "name": "Cost"
+      },
+      "cost_standalone": {
         "name": "{appliance} cost"
       }
     }

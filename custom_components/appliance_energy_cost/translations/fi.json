@@ -43,6 +43,9 @@
   "entity": {
     "sensor": {
       "cost": {
+        "name": "Kustannus"
+      },
+      "cost_standalone": {
         "name": "{appliance} kustannus"
       }
     }

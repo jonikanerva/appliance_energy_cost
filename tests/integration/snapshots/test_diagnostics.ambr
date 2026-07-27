@@ -7,6 +7,7 @@
           'cost': '0.500',
           'energy_sensor': '**REDACTED**',
           'last_energy_kwh': '102.0',
+          'source_entity_uuid': '**REDACTED**',
         }),
         'config_ok': True,
         'cost_entity': dict({
@@ -31,6 +32,7 @@
           'cost': '1.000',
           'energy_sensor': '**REDACTED**',
           'last_energy_kwh': '54.0',
+          'source_entity_uuid': '**REDACTED**',
         }),
         'config_ok': True,
         'cost_entity': dict({
