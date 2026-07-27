@@ -1,15 +1,15 @@
 name: Validate
 
 # hassfest and HACS validation are the only gates that cannot run locally, so
-# they run in CI against main (release verification + upstream-rule-drift
-# detection). The quality gate ($VERIFY_CMD) is local-first; there is no
-# per-PR CI by product-owner decision (2026-07-27, see issue #1).
+# they run in CI, but only when main changes (release verification). The
+# quality gate ($VERIFY_CMD) is local-first; no per-PR and no scheduled CI by
+# product-owner decision (2026-07-27, see issue #1). workflow_dispatch is a
+# manual-only button, e.g. to re-run HACS validation after repo-metadata
+# changes (issue #11).
 on:
   push:
     branches:
       - main
-  schedule:
-    - cron: "0 4 * * *"
   workflow_dispatch:
 
 permissions:
