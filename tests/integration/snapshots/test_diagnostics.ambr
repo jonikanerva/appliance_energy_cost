@@ -1,0 +1,76 @@
+# serializer version: 1
+# name: test_diagnostics_snapshot
+  dict({
+    'appliances': list([
+      dict({
+        'accrual': dict({
+          'cost': '0.500',
+          'energy_sensor': '**REDACTED**',
+          'last_energy_kwh': '102.0',
+        }),
+        'config_ok': True,
+        'cost_entity': dict({
+          'available': True,
+          'entity_id': '**REDACTED**',
+          'price_gap_active': False,
+          'state': '0.500',
+        }),
+        'energy_sensor': '**REDACTED**',
+        'source': dict({
+          'device_class': 'energy',
+          'entity_id': '**REDACTED**',
+          'exists': True,
+          'state': '102.0',
+          'state_class': 'total_increasing',
+          'unit_of_measurement': 'kWh',
+        }),
+        'title': '**REDACTED**',
+      }),
+      dict({
+        'accrual': dict({
+          'cost': '1.000',
+          'energy_sensor': '**REDACTED**',
+          'last_energy_kwh': '54.0',
+        }),
+        'config_ok': True,
+        'cost_entity': dict({
+          'available': True,
+          'entity_id': '**REDACTED**',
+          'price_gap_active': False,
+          'state': '1.000',
+        }),
+        'energy_sensor': '**REDACTED**',
+        'source': dict({
+          'device_class': 'energy',
+          'entity_id': '**REDACTED**',
+          'exists': True,
+          'state': '54.0',
+          'state_class': 'total_increasing',
+          'unit_of_measurement': 'kWh',
+        }),
+        'title': '**REDACTED**',
+      }),
+    ]),
+    'entry': dict({
+      'appliance_count': 2,
+      'data': dict({
+        'currency': 'EUR',
+        'price_sensor': '**REDACTED**',
+      }),
+      'minor_version': 1,
+      'options': dict({
+      }),
+      'state': 'loaded',
+      'title': '**REDACTED**',
+      'version': 1,
+    }),
+    'price_source': dict({
+      'device_class': 'monetary',
+      'entity_id': '**REDACTED**',
+      'exists': True,
+      'state': '0.25',
+      'state_class': 'measurement',
+      'unit_of_measurement': 'EUR/kWh',
+    }),
+  })
+# ---
