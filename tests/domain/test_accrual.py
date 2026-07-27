@@ -119,6 +119,7 @@ def test_gap_paths_are_equivalent_including_a_reset_during_the_gap() -> None:
 
         state = _state(baseline="100", reading="100", price="0.10")
         state = step(apply_price(state, None, D("100")))
+        state = step(apply_energy(state, D("105")))  # 5 kWh held during the gap
         state = step(apply_energy(state, D("40")))  # reset during the gap
         state = step(apply_energy(state, D("45")))
         if gap_end_with_reading:
@@ -132,9 +133,14 @@ def test_gap_paths_are_equivalent_including_a_reset_during_the_gap() -> None:
     without_reading = run(gap_end_with_reading=False)
     assert with_reading == without_reading
     final_state, event_counts = with_reading
-    # Full post-reset reading priced at the returning price: 45 kWh x 0.20.
+    # Pinned deviation: the 5 kWh held before the reset (100 -> 105) is
+    # dropped, not priced at the returning price - a reset destroys the
+    # meter reference for unsettled gap energy (undercharge, never
+    # fabricate). Cost is exactly 45 x 0.20, not (5 + 45) x 0.20.
     assert final_state.cost == D("9.00")
+    assert final_state.cost == D("45") * D("0.20")
     assert final_state.last_energy_kwh == D("45")
+    assert event_counts[AccrualEvent.HELD_PRICE_GAP] == 2
     assert event_counts[AccrualEvent.METER_RESET] == 1
     assert event_counts[AccrualEvent.GAP_ENDED] == 1
 
@@ -169,6 +175,44 @@ def test_price_change_without_reading_prices_later_energy_at_the_new_price() -> 
     assert events == ()
     state, _ = apply_energy(state, D("102"))
     assert state.cost == D("1.00")
+
+
+def test_price_change_with_reading_initialises_a_missing_baseline() -> None:
+    # Autonomy deviation #2: a price change carrying a reading before any
+    # energy event initialises the baseline - the same outcome as the first
+    # energy event, realised earlier; nothing is ever charged for it.
+    state = _state(price="0.10")
+    state, events = apply_price(state, D("0.50"), D("100"))
+    assert events == (AccrualEvent.BASELINE_INITIALISED,)
+    assert state.cost == D("0")
+    assert state.last_energy_kwh == D("100")
+    assert state.last_reading_kwh == D("100")
+    assert state.price_per_kwh == D("0.50")
+
+
+def test_first_price_with_reading_initialises_the_baseline_from_initial_state() -> None:
+    state, events = apply_price(INITIAL_STATE, D("0.10"), D("100"))
+    assert events == (AccrualEvent.GAP_ENDED, AccrualEvent.BASELINE_INITIALISED)
+    assert state.cost == D("0")
+    assert state.last_energy_kwh == D("100")
+    assert state.price_per_kwh == D("0.10")
+
+
+def test_unchanged_reading_during_a_gap_is_a_no_op() -> None:
+    # Autonomy deviation #3: no energy moved, so there is nothing to hold.
+    state = _state(cost="1", baseline="100", reading="105")
+    result = apply_energy(state, D("105"))
+    assert result.events == ()
+    assert result.state == state
+
+
+def test_dip_during_a_gap_holds_the_baseline_and_tracks_the_reading() -> None:
+    state = _state(cost="1", baseline="100", reading="100")
+    result = apply_energy(state, D("95"))
+    assert result.events == (AccrualEvent.METER_DIP,)
+    assert result.state.cost == D("1")
+    assert result.state.last_energy_kwh == D("100")
+    assert result.state.last_reading_kwh == D("95")
 
 
 def test_reset_charges_the_full_new_reading() -> None:
