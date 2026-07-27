@@ -401,3 +401,22 @@ def test_decimal_precision_over_ten_thousand_small_steps() -> None:
         state, _ = apply_energy(state, reading)
     assert state.cost == D("1")
     assert state.last_energy_kwh == D("10")
+
+
+def test_total_class_legitimate_decrease_is_charged_as_a_reset() -> None:
+    """Recorded trade-off (issue #3): state_class ``total`` sources are admitted.
+
+    The domain has exactly one decrease rule, tuned for cumulative
+    consumption meters: a drop below 90% of the last raw reading is a
+    METER_RESET that charges the whole new reading as consumption since
+    the reset. A genuinely decreasing ``total`` source (e.g. net metering
+    that subtracts exported energy) therefore gets its post-decrease
+    reading charged rather than credited — VISION.md scopes the product
+    to costing consumed energy, never crediting exports.
+    """
+    state = _state(baseline="100", reading="100", price="0.10")
+    state, events = apply_energy(state, D("50"))
+    assert events == (AccrualEvent.METER_RESET,)
+    assert state.cost == D("5.00")
+    assert state.last_energy_kwh == D("50")
+    assert state.last_reading_kwh == D("50")
