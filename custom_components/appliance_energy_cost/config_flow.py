@@ -107,6 +107,21 @@ def _user_schema(hass: HomeAssistant) -> vol.Schema:
     )
 
 
+def _is_finite_number(raw: str) -> bool:
+    """Whether a state string is a finite number.
+
+    ``Decimal`` happily constructs NaN/Infinity/sNaN from their string
+    forms (states HA sensors genuinely emit when a float NaN is
+    stringified), so numericness alone is not enough — a non-finite
+    value can never price or measure anything and fails closed.
+    """
+    try:
+        value = Decimal(raw)
+    except InvalidOperation:
+        return False
+    return value.is_finite()
+
+
 class _PriceCheck(NamedTuple):
     """Outcome of the price-sensor validation matrix."""
 
@@ -118,10 +133,10 @@ class _PriceCheck(NamedTuple):
 def _check_price_sensor(hass: HomeAssistant, entity_id: str, currency: str) -> _PriceCheck:
     """Run the price-sensor validation matrix (P1-P4, P6).
 
-    P1 available, P2 numeric, P3 supported per-energy unit, P4 numerator
-    matches the configured currency. P6 (``state_class: measurement``,
-    required for the backfill's hourly mean statistics) is not an error —
-    it routes to an explicit warn-confirm step.
+    P1 available, P2 finite numeric (NaN/Infinity rejected), P3 supported
+    per-energy unit, P4 numerator matches the configured currency. P6
+    (``state_class: measurement``, required for the backfill's hourly mean
+    statistics) is not an error — it routes to an explicit warn-confirm step.
     """
     errors: dict[str, str] = {}
     placeholders: dict[str, str] = {}
@@ -129,9 +144,7 @@ def _check_price_sensor(hass: HomeAssistant, entity_id: str, currency: str) -> _
     if state is None or state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
         errors[CONF_PRICE_SENSOR] = "price_sensor_unavailable"
         return _PriceCheck(errors, placeholders, records_statistics=False)
-    try:
-        Decimal(state.state)
-    except InvalidOperation:
+    if not _is_finite_number(state.state):
         errors[CONF_PRICE_SENSOR] = "price_not_numeric"
         placeholders["state"] = state.state
         return _PriceCheck(errors, placeholders, records_statistics=False)
@@ -157,7 +170,7 @@ def _check_energy_sensor(
 
     A1 available, A2 supported energy unit, A3 cumulative state_class
     (``total`` or ``total_increasing`` — a power or per-period sensor would
-    corrupt the figures), A4 numeric.
+    corrupt the figures), A4 finite numeric (NaN/Infinity rejected).
     """
     errors: dict[str, str] = {}
     placeholders: dict[str, str] = {}
@@ -174,9 +187,7 @@ def _check_energy_sensor(
     if state_class not in (SensorStateClass.TOTAL, SensorStateClass.TOTAL_INCREASING):
         errors[CONF_ENERGY_SENSOR] = "energy_not_cumulative"
         return errors, placeholders
-    try:
-        Decimal(state.state)
-    except InvalidOperation:
+    if not _is_finite_number(state.state):
         errors[CONF_ENERGY_SENSOR] = "energy_not_numeric"
         placeholders["state"] = state.state
     return errors, placeholders
@@ -317,6 +328,11 @@ class ApplianceEnergyCostConfigFlow(ConfigFlow, domain=DOMAIN):
         currency = self._pending_currency
         if price_sensor is None or currency is None:
             raise HomeAssistantError("entry creation requested without pending data")
+        # Re-run at commit time: the warn-confirm step parks the flow at
+        # human speed, another flow may have configured this price sensor
+        # meanwhile, and without an entry unique_id core has no dedup
+        # backstop at flow finish (TOCTOU on one-entry-per-price-sensor).
+        self._async_abort_entries_match({CONF_PRICE_SENSOR: price_sensor})
         state = self.hass.states.get(price_sensor)
         return self.async_create_entry(
             title=state.name if state else price_sensor,
@@ -336,6 +352,10 @@ class ApplianceEnergyCostConfigFlow(ConfigFlow, domain=DOMAIN):
         price_sensor = self._pending_price_sensor
         if price_sensor is None:
             raise HomeAssistantError("reconfigure finish requested without pending data")
+        # Re-run at commit time (see _create_pending_entry): the match
+        # self-excludes the entry under reconfigure, so keeping the own
+        # price sensor still passes.
+        self._async_abort_entries_match({CONF_PRICE_SENSOR: price_sensor})
         return self.async_update_and_abort(
             self._get_reconfigure_entry(),
             data_updates={CONF_PRICE_SENSOR: price_sensor},

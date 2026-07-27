@@ -169,6 +169,11 @@ async def test_missing_price_sensor_entity_is_an_error(hass: HomeAssistant) -> N
         ("unavailable", "EUR/kWh", "price_sensor_unavailable"),
         ("unknown", "EUR/kWh", "price_sensor_unavailable"),
         ("soon", "EUR/kWh", "price_not_numeric"),
+        # Decimal constructs NaN/Infinity from strings without raising;
+        # the finite gate must fail them closed.
+        ("nan", "EUR/kWh", "price_not_numeric"),
+        ("inf", "EUR/kWh", "price_not_numeric"),
+        ("sNaN", "EUR/kWh", "price_not_numeric"),
         ("0.25", "EUR", "price_unit_unsupported"),
         ("0.25", "EUR/l", "price_unit_unsupported"),
         ("0.25", None, "price_unit_unsupported"),
@@ -237,6 +242,57 @@ async def test_abandoning_the_no_statistics_confirm_creates_nothing(
     assert hass.config_entries.async_entries(DOMAIN) == []
 
 
+async def test_parked_confirm_aborts_when_the_sensor_got_configured_meanwhile(
+    hass: HomeAssistant,
+) -> None:
+    """TOCTOU guard: the duplicate check re-runs at commit time.
+
+    The warn-confirm step parks the flow at human speed and the entry has
+    no unique_id, so core has no dedup backstop at flow finish — the
+    commit itself must re-check one-entry-per-price-sensor.
+    """
+    _set_price_sensor(hass, state_class="total")
+    result = await _submit_user_flow(hass)
+    assert result["step_id"] == "confirm_no_statistics"
+    # While the flow is parked, the same price sensor gets configured.
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        title="Electricity price",
+        data={CONF_PRICE_SENSOR: PRICE_SENSOR, CONF_CURRENCY: "EUR"},
+    )
+    other.add_to_hass(hass)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+
+
+async def test_parked_reconfigure_confirm_aborts_when_the_sensor_got_configured_meanwhile(
+    hass: HomeAssistant,
+) -> None:
+    """The reconfigure commit re-checks duplicates across the confirm window too."""
+    _set_price_sensor(hass)
+    _set_price_sensor(hass, "sensor.total_price", state_class="total", name="Total")
+    entry = await _setup_entry(hass)
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PRICE_SENSOR: "sensor.total_price"}
+    )
+    assert result["step_id"] == "confirm_no_statistics"
+    # While the flow is parked, the target price sensor gets configured.
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        title="Total",
+        data={CONF_PRICE_SENSOR: "sensor.total_price", CONF_CURRENCY: "EUR"},
+    )
+    other.add_to_hass(hass)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    # The reconfigured entry is untouched.
+    assert entry.data[CONF_PRICE_SENSOR] == PRICE_SENSOR
+
+
 async def test_aborted_appliance_chain_leaves_a_working_zero_appliance_entry(
     hass: HomeAssistant,
 ) -> None:
@@ -276,6 +332,11 @@ async def test_add_appliance_subentry(hass: HomeAssistant) -> None:
         ("1234.5", "kWh", "measurement", "energy_not_cumulative"),
         ("1234.5", "kWh", None, "energy_not_cumulative"),
         ("12,5", "kWh", "total_increasing", "energy_not_numeric"),
+        # Decimal constructs NaN/Infinity from strings without raising;
+        # the finite gate must fail them closed.
+        ("nan", "kWh", "total_increasing", "energy_not_numeric"),
+        ("inf", "kWh", "total_increasing", "energy_not_numeric"),
+        ("sNaN", "kWh", "total_increasing", "energy_not_numeric"),
     ],
 )
 async def test_add_appliance_rejects_a_bad_energy_sensor(
