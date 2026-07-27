@@ -16,7 +16,8 @@ rules:
       interval.
   brands:
     status: todo
-    comment: Logo/icon submission to home-assistant/brands is issue #12.
+    comment: >-
+      Logo/icon submission to home-assistant/brands is issue #12.
   common-modules:
     status: done
     comment: >-
@@ -32,7 +33,8 @@ rules:
   dependency-transparency: done
   docs-actions:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   docs-triggers:
     status: exempt
     comment: The integration provides no triggers.
@@ -41,13 +43,16 @@ rules:
     comment: The integration provides no conditions.
   docs-high-level-description:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   docs-installation-instructions:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   docs-removal-instructions:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   entity-event-setup: done
   entity-unique-id: done
   has-entity-name: done
@@ -68,10 +73,12 @@ rules:
   config-entry-unloading: done
   docs-configuration-parameters:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   docs-installation-parameters:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   entity-unavailable: done
   integration-owner: done
   log-when-unavailable: done
@@ -109,25 +116,31 @@ rules:
       not devices on a network.
   docs-data-update:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   docs-examples:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   docs-known-limitations:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   docs-supported-devices:
     status: exempt
     comment: No hardware is supported; the integration costs existing entities.
   docs-supported-functions:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   docs-troubleshooting:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   docs-use-cases:
     status: todo
-    comment: README documentation work is issue #9.
+    comment: >-
+      README documentation work is issue #9.
   dynamic-devices:
     status: exempt
     comment: >-
