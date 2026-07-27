@@ -1,0 +1,35 @@
+name: Validate
+
+# hassfest and HACS validation are the only gates that cannot run locally, so
+# they run in CI, but only when main changes (release verification). The
+# quality gate ($VERIFY_CMD) is local-first; no per-PR and no scheduled CI by
+# product-owner decision (2026-07-27, see issue #1). workflow_dispatch is a
+# manual-only button, e.g. to re-run HACS validation after repo-metadata
+# changes (issue #11).
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    runs-on: ubuntu-latest
+    steps:
+      # hacs/action clones the repository itself; no checkout step per HACS docs.
+      # brands/license/description/topics read GitHub repo metadata that no PR
+      # can deliver; tracked as a follow-up to shrink this list.
+      - uses: hacs/action@main
+        with:
+          category: integration
+          ignore: "brands license description topics"
+          comment: false

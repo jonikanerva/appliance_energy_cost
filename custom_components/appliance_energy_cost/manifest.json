@@ -1,0 +1,11 @@
+{
+  "domain": "appliance_energy_cost",
+  "name": "Appliance Energy Cost",
+  "codeowners": ["@jonikanerva"],
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/jonikanerva/appliance_energy_cost",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/jonikanerva/appliance_energy_cost/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

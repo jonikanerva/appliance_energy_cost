@@ -124,7 +124,7 @@ Valid but deliberate: measurable need, clear benefit, isolated exception, docume
 
 ## Safeguards
 
-Enforced in `.claude/settings.json`: force-push and pushes to `main` are blocked; `rm -rf` is deny-listed; the Read tool refuses `.env` files; direct `claude` CLI invocations from Bash are blocked (subagents spawn via the Agent tool); `gh pr merge` only runs when the user explicitly asks, never on the agent's initiative. By doctrine, beyond what hooks can catch: never open `.env` files through any other channel, and never let secrets, credentials, or tokens enter the repo or the logs.
+Enforced in `.claude/settings.json` (permission rules): force-push and `rm -rf` are deny-listed; the Read tool refuses `.env` files; direct `claude` CLI invocations from Bash are blocked (subagents spawn via the Agent tool); `gh pr merge` prompts for permission and runs only when the user explicitly asks, never on the agent's initiative. Pushes to `main` are forbidden by doctrine and the PR-only workflow; a GitHub ruleset blocks deletion and force-push on `main` server-side. By doctrine: never open `.env` files through any other channel, and never let secrets, credentials, or tokens enter the repo or the logs.
 
 ## Decision rights
 

@@ -1,4 +1,4 @@
-# STACK.md — Python 3.13 / Home Assistant custom integration (HACS) profile
+# STACK.md — Python 3.14 / Home Assistant custom integration (HACS) profile
 
 > A strict-typed Home Assistant **custom integration** distributed through HACS, written in async Python. The same correctness-first principles as the TypeScript/Effect and Swift profiles — model impossible states as impossible, validate at the boundary, keep the critical path unblocked, add no dependency without justification — expressed through Home Assistant's own idioms (asyncio event loop, `DataUpdateCoordinator`, config-entry lifecycle, `manifest.json` requirements) rather than against the grain of the ecosystem.
 >
@@ -32,9 +32,9 @@ repo/
       quality_scale.yaml   # tracked quality-scale rule status
   tests/                   # pytest + pytest-homeassistant-custom-component
   hacs.json                # HACS repository metadata
-  mise.toml                # pinned tool/runtime versions (Python, uv, ruff, mypy)
-  pyproject.toml           # ruff, mypy, pytest, uv dev tooling config
-  .github/workflows/       # hassfest + HACS validate + verify
+  mise.toml                # pinned tool/runtime versions (Python, uv)
+  pyproject.toml           # ruff, mypy, pytest, uv dev tooling config + dev-dep pins (ruff, mypy)
+  .github/workflows/       # hassfest + HACS validate (on main push / manual dispatch)
   STACK.md
   VISION.md
   CLAUDE.md
@@ -49,14 +49,14 @@ repo/
 
 ## 1. Language & Runtime
 
-- **Primary language:** Python 3.13 (`from __future__ import annotations` in every module).
-- **Runtime version is not freely chosen — it tracks the Home Assistant release you target.** Set `manifest.json` / CI to the Python version the targeted HA core requires (Home Assistant 2025.x requires **Python 3.13**; do not target a version HA no longer supports, and do not back-deploy to an older Python than HA's minimum). When you bump the supported HA version, re-verify the Python floor first.
+- **Primary language:** Python 3.14 (`from __future__ import annotations` in every module).
+- **Runtime version is not freely chosen — it tracks the Home Assistant release you target.** Set `manifest.json` / CI to the Python version the targeted HA core requires (the targeted `homeassistant==2026.7.4` declares `requires_python >=3.14.2`, hence **Python 3.14**; do not target a version HA no longer supports, and do not back-deploy to an older Python than HA's minimum). When you bump the supported HA version, re-verify the Python floor first.
 - **Strictness mode:** `mypy --strict` with zero errors. Additionally enable `disallow_any_explicit`, `warn_unreachable`, `warn_redundant_casts`, and `no_implicit_optional`. Type checking is **the first reviewer** — prefer designs where a mistake is a type error rather than a runtime surprise. Add the integration to a strict-typing gate; new warnings are not allowed.
 - **Typing discipline:**
   - Model impossible states as impossible: frozen `@dataclass(frozen=True, slots=True)` for domain values, `enum.StrEnum` / `typing.Literal` for closed sets, tagged unions resolved with `match`.
   - `ConfigEntry` MUST be typed via a `type MyConfigEntry = ConfigEntry[MyData]` alias and `runtime_data` used for per-entry state — never module-level globals or `hass.data[DOMAIN]` dictionaries of untyped values for new code.
   - Prefer `TypedDict` for structured dict boundaries; prefer explicit narrowing over `cast`.
-- **Dev-environment provisioning:** [`mise`](https://mise.jdx.dev/) is the single bootstrap. `mise install` provisions **every pinned tool and runtime version** from `mise.toml` — the exact Python 3.13 interpreter, `uv`, `ruff`, and `mypy` — so a fresh checkout reaches a reproducible environment with one command. `mise.toml` is the source of truth for tool/runtime versions.
+- **Dev-environment provisioning:** [`mise`](https://mise.jdx.dev/) is the single bootstrap. `mise install` provisions **every pinned tool and runtime version** from `mise.toml` — the exact Python 3.14 interpreter and `uv` — so a fresh checkout reaches a reproducible environment with one command. `mise.toml` is the source of truth for tool/runtime versions. `ruff` and `mypy` are **not** mise tools: every declared command runs them via `uv run`, so they are pinned as dev dependencies in `pyproject.toml`/`uv.lock` — a mise copy would be unused drift.
 - **Python dependency manager:** [`uv`](https://docs.astral.sh/uv/) (itself provisioned by mise) resolves and locks the dev/test dependencies. Wire it as a mise task (e.g. `mise run setup` → `uv sync`) so `mise install` followed by that task fully bootstraps. The **integration's own runtime dependencies** are declared in `manifest.json → requirements` (HA's contract), never in `pyproject.toml`; `pyproject.toml` + `uv.lock` govern the **development / test** environment only.
 - **Pinning surfaces (three layers, each owns one):** `mise.toml` pins tool/runtime versions; `uv.lock` pins dev dependencies; `manifest.json → requirements` pins exact runtime versions with `==`.
 
@@ -97,7 +97,7 @@ Bootstrap the environment with `mise install` (provisions the pinned tools/runti
 | `$TEST_CMD`   | `uv run pytest`                                                                |
 | `$VERIFY_CMD` | `uv run ruff format --check . && uv run ruff check . && uv run mypy custom_components && uv run pytest` (format-check → lint → type-check → tests) |
 
-> Python has no build artifact, so `$BUILD_CMD` maps to a **bytecode-compile syntax gate** over the integration package. The ecosystem's structural gates — `hassfest` and HACS validation — cannot run locally in a custom-integration repo (`script.hassfest` lives in the Home Assistant core repository), so they run in CI as the `home-assistant/actions/hassfest` and `hacs/action` GitHub Actions. `$VERIFY_CMD` is what any agent must run and report on before claiming completion; the PR must additionally pass the hassfest and HACS-validate actions in CI.
+> Python has no build artifact, so `$BUILD_CMD` maps to a **bytecode-compile syntax gate** over the integration package. **The quality gate is the local `$VERIFY_CMD`** — it is what any agent must run and report on before claiming completion; there is no per-PR CI. The ecosystem's structural gates — `hassfest` and HACS validation — cannot run locally in a custom-integration repo (`script.hassfest` lives in the Home Assistant core repository), so they run in CI as the `home-assistant/actions/hassfest` and `hacs/action` GitHub Actions on pushes to `main` (plus manual dispatch) for release verification.
 
 ---
 
@@ -138,16 +138,18 @@ Default answer to "should we add a library?" is **no**. Home Assistant enforces 
 
 **Development only (`pyproject.toml` dev group, `uv`):**
 
-| Dependency                             | Version                 | Why it earns its place                          |
-| -------------------------------------- | ----------------------- | ----------------------------------------------- |
-| `homeassistant`                        | matches targeted core   | Type stubs + test harness against real core     |
-| `pytest`                               | stable, explicit semver | Test runner                                     |
-| `pytest-homeassistant-custom-component`| matches targeted core   | The standard custom-component test fixtures     |
-| `pytest-asyncio`                       | stable, explicit semver | Async test support                              |
-| `ruff`                                 | stable, explicit semver | Lint + format (HA core's choice)                |
-| `mypy`                                 | stable, explicit semver | Strict type checking                            |
-| `syrupy`                               | stable, explicit semver | Snapshot tests for diagnostics/entity states    |
-| `freezegun`                            | stable, explicit semver | Deterministic time in tests                     |
+| Dependency                             | Version                                  | Why it earns its place                          |
+| -------------------------------------- | ---------------------------------------- | ----------------------------------------------- |
+| `pytest-homeassistant-custom-component`| exact pin (`==`) — **pin owner**         | The standard custom-component test fixtures     |
+| `homeassistant`                        | owned by p-h-c-c pin, resolved in `uv.lock` | Type stubs + test harness against real core  |
+| `pytest`                               | owned by p-h-c-c pin, resolved in `uv.lock` | Test runner                                  |
+| `pytest-asyncio`                       | owned by p-h-c-c pin, resolved in `uv.lock` | Async test support                           |
+| `syrupy`                               | owned by p-h-c-c pin, resolved in `uv.lock` | Snapshot tests for diagnostics/entity states |
+| `freezegun`                            | owned by p-h-c-c pin, resolved in `uv.lock` | Deterministic time in tests                  |
+| `ruff`                                 | exact pin (`==`)                          | Lint + format (HA core's choice)               |
+| `mypy`                                 | exact pin (`==`)                          | Strict type checking                           |
+
+> `pytest-homeassistant-custom-component` hard-pins the exact versions of `homeassistant`, `pytest`, `pytest-asyncio`, `syrupy`, and `freezegun` it is built against. Those five are therefore deliberately declared **unbounded** in `pyproject.toml`: one p-h-c-c bump moves the whole HA-tracking set atomically, and `uv.lock` records the resolved exact versions. This satisfies the spirit of "stable, explicit versions" — the pins exist, they are just owned by p-h-c-c plus the lockfile rather than duplicated (and risk drifting) in `pyproject.toml`.
 
 New runtime entries require a `STACK.md` PR (or ADR) with rationale, owner, approver, and date — and a `hassfest`-clean manifest.
 
