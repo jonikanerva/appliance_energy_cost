@@ -27,8 +27,9 @@ rules:
   config-flow-test-coverage:
     status: todo
     comment: >-
-      Coverage is not measured in this repo yet; adding pytest-cov and
-      adjudicating the bar is issue #23.
+      Measured 2026-07-28 (issue #23 adjudication): config_flow.py is at 98%
+      per-file (4 of 181 statements missed), below the rule's full-coverage
+      bar; closing the gap with tests is issue #29.
   config-flow: done
   dependency-transparency: done
   docs-actions: done
@@ -71,10 +72,11 @@ rules:
       No credentials or accounts exist: the integration only reads local
       entity states.
   test-coverage:
-    status: todo
+    status: done
     comment: >-
-      Coverage is not measured in this repo yet; adding pytest-cov and
-      adjudicating the bar is issue #23.
+      Measured 2026-07-28 (issue #23 adjudication): aggregate 98% (1076
+      statements, 18 missed), above the rule's 95% bar; fail_under is locked
+      at 95 in pyproject.toml and bare `uv run pytest` enforces it.
 
   # Gold
   devices:
