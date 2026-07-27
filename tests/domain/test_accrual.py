@@ -139,6 +139,28 @@ def test_gap_paths_are_equivalent_including_a_reset_during_the_gap() -> None:
     assert event_counts[AccrualEvent.GAP_ENDED] == 1
 
 
+def test_gap_continuation_price_event_tracks_the_reading() -> None:
+    # A price event that stays unavailable but carries a reading must consume
+    # it like any gap energy event: against a stale raw reading of 100, the
+    # later true reset (95 < 0.9 x 150) would misclassify as a dip.
+    state = _state(baseline="100", reading="100")
+    state, events = apply_price(state, None, D("150"))
+    assert events == (AccrualEvent.HELD_PRICE_GAP,)
+    assert state.last_reading_kwh == D("150")
+    assert state.last_energy_kwh == D("100")
+    state, events = apply_energy(state, D("95"))
+    assert events == (AccrualEvent.METER_RESET,)
+    assert state.last_energy_kwh == D("0")
+    assert state.last_reading_kwh == D("95")
+
+
+def test_gap_continuation_price_event_without_reading_is_a_no_op() -> None:
+    state = _state(cost="1", baseline="100", reading="100")
+    result = apply_price(state, None, None)
+    assert result.events == ()
+    assert result.state == state
+
+
 def test_price_change_without_reading_prices_later_energy_at_the_new_price() -> None:
     # Pinned degraded behaviour: with no reading at switch time, energy
     # accumulated under the old price is priced at the new price later.

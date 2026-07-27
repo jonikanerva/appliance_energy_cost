@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from decimal import Decimal
-from enum import StrEnum
+from enum import Enum, StrEnum, auto
 from typing import Final, NamedTuple
 
 
@@ -73,6 +73,30 @@ class Transition(NamedTuple):
 _RESET_FRACTION: Final = Decimal("0.9")
 
 
+class _ReadingClass(Enum):
+    """Classification of a new raw reading against the last raw reading."""
+
+    RESET = auto()
+    DIP = auto()
+    UNCHANGED = auto()
+    ADVANCE = auto()
+
+
+def _classify(last_reading_kwh: Decimal, reading_kwh: Decimal) -> _ReadingClass:
+    """The single reset/dip predicate, shared by every consumer.
+
+    The issue #2 amendment mandates one shared classify helper so a reset
+    during a price gap is classified identically to one outside it.
+    """
+    if reading_kwh < last_reading_kwh:
+        if reading_kwh < _RESET_FRACTION * last_reading_kwh:
+            return _ReadingClass.RESET
+        return _ReadingClass.DIP
+    if reading_kwh == last_reading_kwh:
+        return _ReadingClass.UNCHANGED
+    return _ReadingClass.ADVANCE
+
+
 class _Settlement(NamedTuple):
     cost: Decimal
     baseline_kwh: Decimal
@@ -97,8 +121,8 @@ def _settle(
         # First reading: baseline to it so pre-existing consumption is
         # never priced at today's price.
         return _Settlement(cost, reading_kwh, reading_kwh, (AccrualEvent.BASELINE_INITIALISED,))
-    if reading_kwh < last_reading_kwh:
-        if reading_kwh < _RESET_FRACTION * last_reading_kwh:
+    match _classify(last_reading_kwh, reading_kwh):
+        case _ReadingClass.RESET:
             # Reset: the new reading is consumption since the reset
             # (issue #2, as amended by the 2026-07-27 comment).
             return _Settlement(
@@ -107,21 +131,23 @@ def _settle(
                 reading_kwh,
                 (AccrualEvent.METER_RESET,),
             )
-        # Dip (decrease within 10 %): charge nothing and hold the priced
-        # baseline at its high-water mark so the recovery leg is not
-        # double-charged and float-noise oscillation fabricates zero cost.
-        return _Settlement(cost, baseline_kwh, reading_kwh, (AccrualEvent.METER_DIP,))
-    delta = reading_kwh - baseline_kwh
-    if delta <= 0:
-        # At or below the held high-water mark (post-dip recovery, or an
-        # unchanged reading): charge nothing, only track the raw reading.
-        return _Settlement(cost, baseline_kwh, reading_kwh, ())
-    return _Settlement(
-        cost + delta * price_per_kwh,
-        reading_kwh,
-        reading_kwh,
-        (AccrualEvent.ACCRUED,),
-    )
+        case _ReadingClass.DIP:
+            # Dip (decrease within 10 %): charge nothing and hold the priced
+            # baseline at its high-water mark so the recovery leg is not
+            # double-charged and float-noise oscillation fabricates zero cost.
+            return _Settlement(cost, baseline_kwh, reading_kwh, (AccrualEvent.METER_DIP,))
+        case _ReadingClass.UNCHANGED | _ReadingClass.ADVANCE:
+            delta = reading_kwh - baseline_kwh
+            if delta <= 0:
+                # At or below the held high-water mark (post-dip recovery, or
+                # an unchanged reading): charge nothing, track the reading.
+                return _Settlement(cost, baseline_kwh, reading_kwh, ())
+            return _Settlement(
+                cost + delta * price_per_kwh,
+                reading_kwh,
+                reading_kwh,
+                (AccrualEvent.ACCRUED,),
+            )
 
 
 def _track_gap_energy(
@@ -132,12 +158,12 @@ def _track_gap_energy(
     """Track meter movement during a price gap without charging anything.
 
     The priced baseline is held so the whole gap delta is settled when a
-    price returns (v1 returning-price policy, see ``_end_gap``). Reset and
-    dip use the same predicates as ``_settle`` so a reset during a gap is
-    classified identically to one outside it.
+    price returns (v1 returning-price policy, see ``_end_gap``). The reading
+    is classified by the shared ``_classify`` helper so a reset during a gap
+    is classified identically to one outside it.
     """
-    if reading_kwh < last_reading_kwh:
-        if reading_kwh < _RESET_FRACTION * last_reading_kwh:
+    match _classify(last_reading_kwh, reading_kwh):
+        case _ReadingClass.RESET:
             # A reset destroys the meter reference for any unsettled
             # pre-reset gap energy: that energy is dropped (undercharge,
             # never fabricate), while re-baselining to zero makes the full
@@ -147,16 +173,18 @@ def _track_gap_energy(
                 replace(state, last_energy_kwh=Decimal("0"), last_reading_kwh=reading_kwh),
                 (AccrualEvent.METER_RESET,),
             )
-        return Transition(
-            replace(state, last_reading_kwh=reading_kwh),
-            (AccrualEvent.METER_DIP,),
-        )
-    if reading_kwh == last_reading_kwh:
-        return Transition(state, ())
-    return Transition(
-        replace(state, last_reading_kwh=reading_kwh),
-        (AccrualEvent.HELD_PRICE_GAP,),
-    )
+        case _ReadingClass.DIP:
+            return Transition(
+                replace(state, last_reading_kwh=reading_kwh),
+                (AccrualEvent.METER_DIP,),
+            )
+        case _ReadingClass.UNCHANGED:
+            return Transition(state, ())
+        case _ReadingClass.ADVANCE:
+            return Transition(
+                replace(state, last_reading_kwh=reading_kwh),
+                (AccrualEvent.HELD_PRICE_GAP,),
+            )
 
 
 def apply_energy(state: AccrualState, energy_kwh: Decimal) -> Transition:
@@ -244,7 +272,12 @@ def apply_price(
     old_price = state.price_per_kwh
     if old_price is None:
         if new_price_per_kwh is None:
-            return Transition(state, ())
+            if current_energy_kwh is None:
+                return Transition(state, ())
+            # A still-unavailable price event can carry a reading; consume
+            # it exactly like an energy event during the gap so the raw
+            # reading never goes stale for reset/dip classification.
+            return apply_energy(state, current_energy_kwh)
         return _end_gap(state, new_price_per_kwh, current_energy_kwh)
     if current_energy_kwh is None:
         # Degraded but documented: with no reading at switch time there is
