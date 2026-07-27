@@ -73,6 +73,44 @@
           "description": "Päällä ollessaan ok on epätosi, jos jollakin laitteella on puuttuvan hinnan tai virheellisen energian tunteja, joten löydökset on ratkaistava tai tietoisesti hyväksyttävä ennen tuontia. Pois päältä ollessaan ok pysyy totena ja löydökset raportoidaan vain laitekohtaisissa lukumäärissä ja aikaväleissä."
         }
       }
+    },
+    "import_backfill": {
+      "name": "Tuo takautuva täyttö",
+      "description": "Kirjoittaa lasketun historiallisen kustannussarjan pitkän aikavälin tilastoihin. Vaatii nimenomaisen confirm: true -arvon — ilman sitä mitään ei kirjoiteta. Jaksolla jo olevat rivit estävät tuonnin oletuksena; overwrite_existing päivittää ikkunan täsmäävät tuntirivit tämän integraation omassa kustannussarjassa — tunnit, joille uudella sarjalla ei ole pistettä, säilyttävät olemassa olevat rivinsä. Tuo tuntirivit UTC-ajassa, vain pitkän aikavälin tilastoihin. Ei koskaan kalibroi reaaliaikaisia kustannusantureita — reaaliaikaisen sarjan liittäminen tuotuun historiaan on erillinen kalibrointipalvelu. Integraation poistaminen ei poista tuotuja rivejä. Hintahistoria tulkitaan hintasarjan nykyisessä yksikössä; jos hinta-anturin yksikkö on vaihtunut kesken historian, vanhemmat esikatsellut luvut ovat väärin — tarkista summien järkevyys. Vastaus palautetaan vasta, kun rivit on tallennettu ja luettu uudelleen tietokannasta.",
+      "fields": {
+        "config_entry": {
+          "name": "Merkintä",
+          "description": "Appliance Energy Cost -merkintä, jonka laitteet tuodaan."
+        },
+        "start": {
+          "name": "Alku",
+          "description": "Jakson alku, mukaan lukien. On oltava tasatunti UTC-ajassa; aikavyöhykkeellinen arvo muunnetaan UTC:hen, aikavyöhykkeetön tulkitaan Home Assistantin aikavyöhykkeessä, ja muunnoksen jälkeen minuuttien, sekuntien ja mikrosekuntien on oltava nollia."
+        },
+        "end": {
+          "name": "Loppu",
+          "description": "Jakson loppu, pois lukien. Sama tasatunti-UTC-sääntö kuin alulla; on oltava alun jälkeen eikä tulevaisuudessa. Oletus on kuluvan UTC-tunnin alku, joten vajaata tuntia ei koskaan sisällytetä."
+        },
+        "appliances": {
+          "name": "Laitteet",
+          "description": "Rajaa tuonti näitä energia-antureita käyttäviin laitteisiin. Oletus: kaikki merkinnän laitteet. Pakollinen rajaus initial_cost-arvoa annettaessa ja toipumisreitti osittaisen monilaitetuloksen jälkeen."
+        },
+        "strict": {
+          "name": "Tiukka",
+          "description": "Päällä ollessaan tuonti keskeytyy, jos jollakin laitteella on puuttuvan hinnan tai virheellisen energian tunteja. Pois päältä ollessaan merkityt tunnit ohitetaan ja raportoidaan kuitissa — ohitettujen tuntien kulutusta ei koskaan hinnoitella, mikä on pysyvä alilaskenta jaksolle."
+        },
+        "confirm": {
+          "name": "Vahvista",
+          "description": "On oltava tosi, jotta mitään kirjoitetaan. Vaatimus on olemassa, jotta liitetty esikatselukutsu ei voi koskaan kirjoittaa historiaa vahingossa; aja ensin preview_backfill nähdäksesi mitä kirjoitettaisiin."
+        },
+        "overwrite_existing": {
+          "name": "Korvaa olemassa olevat",
+          "description": "Jatka, vaikka kustannussarjassa on jo rivejä jaksolla, päivittäen ikkunan täsmäävät tuntirivit tämän integraation omassa kustannussarjassa. Tunnit, joille uudella sarjalla ei ole pistettä, säilyttävät olemassa olevat rivinsä; jakson ulkopuolisiin riveihin ei koskaan kosketa; poistoreittiä ei ole."
+        },
+        "initial_cost": {
+          "name": "Alkukustannus",
+          "description": "Kumulatiivinen kustannus välittömästi ennen alkua olemassa olevan sarjan jatkamiseen (oletus 0; negatiiviset arvot ovat kelvollisia). Vaatii täsmälleen yhden valitun laitteen — yksi tuontikutsu laitetta kohden, kun arvo annetaan. Väärä arvo tekee sarjaan porrastuksen alkuhetkellä."
+        }
+      }
     }
   },
   "exceptions": {
@@ -105,6 +143,30 @@
     },
     "energy_statistics_unit_unsupported": {
       "message": "Laitteen {appliance} energia-anturin {energy_sensor} tallennettu tilastoyksikkö {unit} ei ole tuettu. Odotettiin Wh, kWh tai MWh."
+    },
+    "confirm_required": {
+      "message": "Tämä palvelu kirjoittaa historiallisia kustannusrivejä pitkän aikavälin tilastoihin. Aja ensin preview_backfill nähdäksesi mitä kirjoitettaisiin, ja kutsu sitten uudelleen arvolla confirm: true. Mitään ei kirjoitettu."
+    },
+    "initial_cost_requires_single_appliance": {
+      "message": "initial_cost on täsmälleen yhden laitteen sarjan alkua edeltävä kumulatiivinen kustannus, mutta tämä kutsu valitsee {count} laitetta ({appliances}). Tee yksi tuontikutsu laitetta kohden, kun annat initial_cost-arvon, ja rajaa laitesuodattimella. Mitään ei kirjoitettu."
+    },
+    "import_strict_findings": {
+      "message": "Tiukka tuonti keskeytyi tarkistuslöydöksiin — {findings}. Esikatsele merkityt aikavälit preview_backfill-palvelulla, kavenna jaksoa, rajaa laitteita laitesuodattimella tai aseta strict: false hyväksyäksesi löydökset tietoisesti; ohitettujen tuntien kulutusta ei koskaan hinnoitella. Mitään ei kirjoitettu."
+    },
+    "nothing_to_import": {
+      "message": "Ei tuotavia tuntipisteitä välillä {start} – {end} valituille laitteille. Aja preview_backfill nähdäksesi mitä jakso sisältää. Mitään ei kirjoitettu."
+    },
+    "import_overlap": {
+      "message": "Kustannussarjan olemassa olevat rivit estävät tuonnin — {overlaps} (UTC). Kavenna jakso tunteihin, joilla ei ole rivejä, tai aseta overwrite_existing: true päivittääksesi täsmäävät tunnit paikallaan. Mitään ei kirjoitettu."
+    },
+    "import_discontinuity": {
+      "message": "Kustannussarjassa on jo rivejä ennen hetkeä {start} — {details}. Tuonti oletusarvolla initial_cost 0 tekisi sarjaan porrastuksen alkuhetkellä. Anna initial_cost-arvoksi alkua edeltävä kumulatiivinen summa jatkaaksesi sarjaa (yksi tuontikutsu laitetta kohden), tai aja esikatselu uudelleen ja tuo sarjan todellisesta alusta. Mitään ei kirjoitettu."
+    },
+    "cost_statistics_metadata_mismatch": {
+      "message": "Tunnisteen {statistic_id} olemassa olevat tilastometatiedot eivät vastaa tämän integraation kirjoittamaa kustannussarjaa: {differences}. Tuonti nimeäisi olemassa olevan sarjan uudelleen. Mitään ei kirjoitettu."
+    },
+    "import_verification_failed": {
+      "message": "{expected} riviä odotettiin, {actual} vahvistettiin laitteelle {appliance}. Kirjoitus voi vielä valmistua taustalla tai olla epäonnistunut pysyvästi (tarkista Home Assistantin loki). Saman tuonnin ajaminen uudelleen on turvallista: jos rivit tallentuivat myöhemmin, päällekkäisyyssuoja kieltäytyy eikä mitään kirjoiteta kahdesti; jos ne eivät koskaan tallentuneet, uusinta-ajo tuo ne. Vahvistetut rivit laitteittain: {rows_written}. Osittaisen monilaitetuloksen jälkeen aja uudelleen laitesuodatin rajattuna laitteisiin, joilta rivit puuttuvat."
     }
   },
   "config_subentries": {

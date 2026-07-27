@@ -2,6 +2,9 @@
   "services": {
     "preview_backfill": {
       "service": "mdi:file-search-outline"
+    },
+    "import_backfill": {
+      "service": "mdi:database-import-outline"
     }
   }
 }

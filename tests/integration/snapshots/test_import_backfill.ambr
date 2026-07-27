@@ -1,0 +1,28 @@
+# serializer version: 1
+# name: test_full_receipt_snapshot_and_json_round_trip
+  dict({
+    'appliances': list([
+      dict({
+        'appliance': 'Heat pump',
+        'end_energy_kwh': 104.0,
+        'energy_gap_hours': 0,
+        'energy_sensor': 'sensor.heat_pump_energy',
+        'first_point': '2026-07-20T00:00:00+00:00',
+        'invalid_energy_hours': 0,
+        'last_point': '2026-07-20T03:00:00+00:00',
+        'missing_price_hours': 2,
+        'rows_written': 2,
+        'statistic_id': 'sensor.heat_pump_cost',
+        'total_cost': 0.5,
+        'total_energy_kwh': 2.0,
+      }),
+    ]),
+    'currency': 'EUR',
+    'end': '2026-07-20T04:00:00+00:00',
+    'initial_cost': 0.0,
+    'overwrite_existing': False,
+    'price_sensor': 'sensor.electricity_price',
+    'start': '2026-07-20T00:00:00+00:00',
+    'strict': False,
+  })
+# ---
