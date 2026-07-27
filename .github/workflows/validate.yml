@@ -1,0 +1,32 @@
+name: Validate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    runs-on: ubuntu-latest
+    steps:
+      # hacs/action clones the repository itself; no checkout step per HACS docs.
+      # brands/license/description/topics read GitHub repo metadata that no PR
+      # can deliver; tracked as a follow-up to shrink this list.
+      - uses: hacs/action@main
+        with:
+          category: integration
+          ignore: "brands license description topics"
+          comment: false
