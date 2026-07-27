@@ -5,6 +5,9 @@
     },
     "import_backfill": {
       "service": "mdi:database-import-outline"
+    },
+    "calibrate_cost": {
+      "service": "mdi:scale-balance"
     }
   }
 }

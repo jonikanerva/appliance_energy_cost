@@ -1,0 +1,14 @@
+# serializer version: 1
+# name: test_receipt_snapshot_and_info_log
+  dict({
+    'sensor.heat_pump_cost': dict({
+      'currency': 'EUR',
+      'entity_id': 'sensor.heat_pump_cost',
+      'new_baseline_kwh': 103.0,
+      'new_cost': 2.25,
+      'old_baseline_kwh': 103.0,
+      'old_cost': 1.5,
+      'price_gap_active': False,
+    }),
+  })
+# ---

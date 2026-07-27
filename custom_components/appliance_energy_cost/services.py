@@ -1,4 +1,4 @@
-"""The ``preview_backfill`` and ``import_backfill`` services.
+"""The ``preview_backfill``, ``import_backfill`` and ``calibrate_cost`` services.
 
 The only module that touches ``homeassistant.components.recorder``. It reads
 hourly long-term statistics through the supported statistics APIs, narrows the
@@ -6,9 +6,11 @@ rows into domain shapes at the edge, and hands the pure calculation to
 ``backfill.py``. The preview never writes; the import writes only through the
 supported ``async_import_statistics`` API, only to the integration's own cost
 statistic IDs, and only after an explicit ``confirm`` and every pre-write gate
-has passed for every selected appliance. Neither service modifies live
-sensors — joining the live series to imported history is the separate
-calibration service (issue #7).
+has passed for every selected appliance. Neither backfill service modifies
+live sensors — joining the live series to imported history is
+``calibrate_cost``, the batched entity service registered here (issue #7):
+validation lives in this module, the state mutation on the targeted
+``ApplianceCostSensor``, and recorded statistics are never touched.
 
 Concurrency shape (event loop never blocks): sequential executor jobs — a
 recorder-executor pass reading metadata and rows, a general-executor pass
@@ -40,6 +42,7 @@ from homeassistant.components.recorder.statistics import (
 )
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.core import (
+    EntityServiceResponse,
     HomeAssistant,
     ServiceCall,
     ServiceResponse,
@@ -52,6 +55,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import service
 from homeassistant.helpers.recorder import get_instance
 from homeassistant.helpers.selector import ConfigEntrySelector, ConfigEntrySelectorConfig
+from homeassistant.helpers.typing import VolDictType
 from homeassistant.util import dt as dt_util
 from homeassistant.util.json import JsonValueType
 
@@ -83,20 +87,30 @@ from .const import (
     ATTR_TOTAL_COST,
     ATTR_TOTAL_ENERGY_KWH,
     ATTR_VALID,
+    ATTR_VALUE,
     CONF_CURRENCY,
     CONF_ENERGY_SENSOR,
     CONF_PRICE_SENSOR,
     DOMAIN,
     RANGE_CAP,
+    SERVICE_CALIBRATE_COST,
     SERVICE_IMPORT_BACKFILL,
     SERVICE_PREVIEW_BACKFILL,
     SUBENTRY_TYPE_APPLIANCE,
 )
 from .models import ApplianceConfig, EntryRuntimeData, decode_appliance_config
-from .units import EnergyUnit, PriceUnit, currency_matches, parse_energy_unit, parse_price_unit
+from .units import (
+    EnergyUnit,
+    PriceUnit,
+    currency_matches,
+    parse_energy_unit,
+    parse_finite_decimal,
+    parse_price_unit,
+)
 
 if TYPE_CHECKING:
     from . import ApplianceEnergyCostConfigEntry
+    from .sensor import ApplianceCostSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -128,6 +142,14 @@ IMPORT_SCHEMA: Final = PREVIEW_SCHEMA.extend(
         vol.Optional(ATTR_INITIAL_COST): vol.Coerce(float),
     }
 )
+
+# A plain dict on purpose: the platform-entity-service helper wraps it with
+# ``cv.make_entity_service_schema`` (target fields included). ``value`` is
+# required with NO default — a defaulted 0 would turn a bare call into an
+# accidental full reset. Negative values are legal (negative prices legally
+# yield a negative cumulative cost); finiteness is the handler's translated
+# check, exactly like ``initial_cost``.
+CALIBRATE_SCHEMA: Final[VolDictType] = {vol.Required(ATTR_VALUE): vol.Coerce(float)}
 
 _EPOCH: Final = datetime.fromtimestamp(0, tz=UTC)
 
@@ -1008,6 +1030,44 @@ async def _async_handle_import(call: ServiceCall) -> ServiceResponse:
     }
 
 
+async def _async_handle_calibrate(
+    entities: list[ApplianceCostSensor], call: ServiceCall
+) -> EntityServiceResponse:
+    """Handle one ``calibrate_cost`` call.
+
+    Batched registration is the single-target enforcement mechanism: the
+    handler sees the WHOLE resolved target set at once, so an area, label or
+    multi-entity target can never fan one value out over many cost sensors
+    (with 0, a one-call mass reset). A per-entity handler could only see one
+    entity at a time and could not refuse the set. The entities are
+    ``ApplianceCostSensor`` by construction — the platform-entity filter
+    resolves against this integration's sensor platform only. Validation
+    lives here; the state mutation is the entity's ``async_calibrate``.
+    """
+    if len(entities) != 1:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="calibration_single_target",
+            translation_placeholders={
+                "count": str(len(entities)),
+                "entity_ids": ", ".join(entity.entity_id for entity in entities),
+            },
+        )
+    raw_value: float = call.data[ATTR_VALUE]
+    # Decimal(str(...)) once at the boundary, exactly like initial_cost.
+    # vol.Coerce(float) happily coerces "inf"/"nan" strings a YAML call can
+    # carry, and a non-finite value can never be a cumulative cost.
+    value = parse_finite_decimal(str(raw_value))
+    if value is None:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="calibration_value_not_finite",
+            translation_placeholders={"value": str(raw_value)},
+        )
+    (entity,) = entities
+    return {entity.entity_id: entity.async_calibrate(value)}
+
+
 @callback
 def async_setup_services(hass: HomeAssistant) -> None:
     """Register the integration's services. Called once, from ``async_setup``."""
@@ -1023,5 +1083,19 @@ def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_IMPORT_BACKFILL,
         _async_handle_import,
         schema=IMPORT_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    # Batched, not per-entity, so the handler can refuse a multi-entity
+    # target as a whole (see _async_handle_calibrate). Verified against HA
+    # 2026.7.4: helpers/service.py::async_register_batched_platform_entity_service
+    # resolves targets against this integration's sensor-platform entities,
+    # filters unavailable ones, and calls the handler once with the list.
+    service.async_register_batched_platform_entity_service(
+        hass,
+        DOMAIN,
+        SERVICE_CALIBRATE_COST,
+        entity_domain=SENSOR_DOMAIN,
+        func=_async_handle_calibrate,
+        schema=CALIBRATE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )

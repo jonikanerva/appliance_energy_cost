@@ -111,6 +111,16 @@
           "description": "Kumulatiivinen kustannus välittömästi ennen alkua olemassa olevan sarjan jatkamiseen (oletus 0; negatiiviset arvot ovat kelvollisia). Vaatii täsmälleen yhden valitun laitteen — yksi tuontikutsu laitetta kohden, kun arvo annetaan. Väärä arvo tekee sarjaan porrastuksen alkuhetkellä."
         }
       }
+    },
+    "calibrate_cost": {
+      "name": "Kalibroi kustannus",
+      "description": "Asettaa kustannusanturin kumulatiivisen kustannuksen arvoon value (merkinnän valuutassa) ja asettaa lähtötasoksi energia-anturin nykyisen lukeman — kertymä jatkuu uudesta arvosta. Nollataksesi kalibroi arvoon 0 — tämä kirjaa koko kertyneen kustannuksen yhtenä negatiivisena muutoksena pitkän aikavälin tilastoihin. Ei koskaan kosketa tallennettuja tilastoja; seuraava tuntitilasto kirjaa hypyn yhtenä muutoksena. Kalibrointi muuttaa tasoa seuraavasta koostetusta tunnista alkaen; se ei voi siirtää tuodun ja reaaliaikaisen sarjan rajalle jo kirjattua poikkeamaa. Siirtymä tuonnin jälkeen: value = tuontikuitin total_cost + (mittarin nykyinen lukema − kuitin end_energy_kwh) × nykyinen hinta — pätee vain samalla hintatunnilla kuin tuonnin loppu; jos hinta on vaihtunut, aja esikatselu uudelleen. Täysi ohje README-tiedostossa.",
+      "fields": {
+        "value": {
+          "name": "Arvo",
+          "description": "Uusi kumulatiivinen kustannus merkinnän valuutassa; negatiiviset arvot ovat kelvollisia. Yksi arvo kuuluu yhdelle kustannusanturille — kutsu palvelua kerran anturia kohden. Hinta-aukon aikana asetettu arvo korvaa seuratun mutta vielä hinnoittelemattoman energian; sitä ei veloiteta uudelleen hinnan palatessa."
+        }
+      }
     }
   },
   "exceptions": {
@@ -167,6 +177,18 @@
     },
     "import_verification_failed": {
       "message": "{expected} riviä odotettiin, {actual} vahvistettiin laitteelle {appliance}. Kirjoitus voi vielä valmistua taustalla tai olla epäonnistunut pysyvästi (tarkista Home Assistantin loki). Saman tuonnin ajaminen uudelleen on turvallista: jos rivit tallentuivat myöhemmin, päällekkäisyyssuoja kieltäytyy eikä mitään kirjoiteta kahdesti; jos ne eivät koskaan tallentuneet, uusinta-ajo tuo ne. Vahvistetut rivit laitteittain: {rows_written}. Osittaisen monilaitetuloksen jälkeen aja uudelleen laitesuodatin rajattuna laitteisiin, joilta rivit puuttuvat."
+    },
+    "calibration_single_target": {
+      "message": "Yksi kalibrointiarvo kuuluu yhdelle kustannusanturille, mutta tämä kutsu kohdistuu {count} anturiin ({entity_ids}). Kutsu palvelua kerran anturia kohden. Mitään ei muutettu."
+    },
+    "calibration_value_not_finite": {
+      "message": "Arvon value on oltava äärellinen luku; saatiin {value}. Mitään ei muutettu."
+    },
+    "calibration_source_unusable": {
+      "message": "Anturia {entity} ei voi kalibroida: sen energia-anturilla {sensor} ei ole käyttökelpoista kumulatiivista lukemaa (tila {state}, yksikkö {unit}). Uuden lähtötason on tultava todellisesta lukemasta — odota, kunnes {sensor} ilmoittaa numeerisen lukeman, ja aja sitten uudelleen. Mitään ei muutettu."
+    },
+    "calibration_source_reading_negative": {
+      "message": "Anturia {entity} ei voi kalibroida: sen energia-anturi {sensor} ilmoittaa negatiivisen kumulatiivisen lukeman ({reading} kWh), josta ei koskaan saa tulla lähtötasoa. Mitään ei muutettu."
     }
   },
   "config_subentries": {
