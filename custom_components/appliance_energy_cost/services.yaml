@@ -70,3 +70,15 @@ import_backfill:
         number:
           mode: box
           step: any
+calibrate_cost:
+  target:
+    entity:
+      domain: sensor
+      integration: appliance_energy_cost
+  fields:
+    value:
+      required: true
+      selector:
+        number:
+          mode: box
+          step: any

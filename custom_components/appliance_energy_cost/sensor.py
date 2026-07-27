@@ -28,14 +28,17 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
+    ATTR_ENTITY_ID,
     ATTR_UNIT_OF_MEASUREMENT,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
+from homeassistant.util.json import JsonValueType
 
 from . import ApplianceEnergyCostConfigEntry
 from .accrual import (
@@ -45,11 +48,18 @@ from .accrual import (
     Transition,
     apply_energy,
     apply_price,
+    calibrate,
 )
 from .const import (
+    ATTR_NEW_BASELINE_KWH,
+    ATTR_NEW_COST,
+    ATTR_OLD_BASELINE_KWH,
+    ATTR_OLD_COST,
     ATTR_PRICE_GAP_ACTIVE,
+    CONF_CURRENCY,
     CONF_ENERGY_SENSOR,
     CONF_PRICE_SENSOR,
+    DOMAIN,
     SUBENTRY_TYPE_APPLIANCE,
 )
 from .models import ApplianceConfig, EntryRuntimeData, decode_appliance_config
@@ -442,6 +452,79 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
         )
         self.async_write_ha_state()
 
+    @callback
+    def async_calibrate(self, value: Decimal) -> dict[str, JsonValueType]:
+        """Set the cumulative cost to ``value`` and re-baseline to the meter.
+
+        The explicit user act (issue #7) that joins the live series to
+        imported history or corrects a wrong level. Synchronous on the event
+        loop by design: no await may separate reading the source state from
+        ``async_write_ha_state``, or a source event landing in that window
+        would settle against a half-applied state. Recorded statistics are
+        never touched — the next compiled hour records the jump as one
+        change. During a price gap the value supersedes gap-tracked unpriced
+        energy: re-baselining to the current reading means it is never
+        charged when the price returns (domain ``calibrate`` semantics).
+        """
+        state = self.hass.states.get(self._energy_sensor)
+        reading = _parse_energy_reading(state)
+        if reading is None:
+            # The new baseline must come from a real reading: calibrating
+            # with a silently dropped baseline would unprice every kWh until
+            # the next reading re-initialised it without charging.
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="calibration_source_unusable",
+                translation_placeholders={
+                    "entity": self.entity_id,
+                    "sensor": self._energy_sensor,
+                    "state": STATE_UNKNOWN if state is None else state.state,
+                    "unit": str(
+                        None if state is None else state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+                    ),
+                },
+            )
+        if reading < 0:
+            # HomeAssistantError, not ServiceValidationError: a negative
+            # cumulative reading is broken system state the caller cannot
+            # fix by changing the call (mirrors the accrual INVALID_READING
+            # contract — it must never become a baseline).
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="calibration_source_reading_negative",
+                translation_placeholders={
+                    "entity": self.entity_id,
+                    "sensor": self._energy_sensor,
+                    "reading": str(reading),
+                },
+            )
+        old = self._accrual
+        self._apply_transition(calibrate(old, value, reading), reading_supplied=True)
+        self.async_write_ha_state()
+        # INFO on purpose: a rare explicit user action whose old → new record
+        # must exist in the log — the optional receipt cannot be the only one.
+        _LOGGER.info(
+            "Calibrated %s: %s → %s %s, baseline %s kWh",
+            self.entity_id,
+            old.cost,
+            self._accrual.cost,
+            self._currency,
+            self._accrual.last_energy_kwh,
+        )
+        # Decimal → float at the edge, no rounding: the floats are the exact
+        # values the state now holds.
+        return {
+            ATTR_ENTITY_ID: self.entity_id,
+            ATTR_OLD_COST: float(old.cost),
+            ATTR_NEW_COST: float(self._accrual.cost),
+            ATTR_OLD_BASELINE_KWH: (
+                None if old.last_energy_kwh is None else float(old.last_energy_kwh)
+            ),
+            ATTR_NEW_BASELINE_KWH: float(reading),
+            CONF_CURRENCY: self._currency,
+            ATTR_PRICE_GAP_ACTIVE: self._accrual.price_per_kwh is None,
+        }
+
     def _log_unparseable_energy_once(self, reason: str) -> None:
         """Warn on the transition into an unparseable-energy streak only."""
         if not self._unparseable_energy_logged:
@@ -520,6 +603,9 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
                         )
                     self._invalid_reading_logged = True
                 case AccrualEvent.CALIBRATED:
-                    _LOGGER.debug("%s: calibrated", self.entity_id)
+                    # Logged at INFO by async_calibrate — the only producer —
+                    # because the log line needs the old → new values this
+                    # transition-level view no longer has.
+                    pass
         if reading_supplied and AccrualEvent.INVALID_READING not in transition.events:
             self._invalid_reading_logged = False

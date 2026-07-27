@@ -111,6 +111,16 @@
           "description": "Cumulative cost immediately before start, for continuing an existing series (default 0; negative values are valid). Requires exactly one selected appliance — one import call per appliance when supplying it. A wrong value makes the series step at start."
         }
       }
+    },
+    "calibrate_cost": {
+      "name": "Calibrate cost",
+      "description": "Sets the cost sensor's cumulative cost to value (in the entry currency) and re-baselines to the energy sensor's current reading — subsequent accrual continues from the new value. To reset, calibrate to 0 — this records the whole accumulated cost as one negative change in long-term statistics. Never touches recorded statistics; the next hourly statistic records the jump as one change. Calibration changes the level from the next compiled hour onward; it cannot move a mismatch already recorded at the imported-to-live boundary. Cutover after an import: value = the import receipt's total_cost + (current meter reading − the receipt's end_energy_kwh) × the current price — valid only within the same price hour as the import's end; if the price changed, re-preview instead. Full recipe in the README.",
+      "fields": {
+        "value": {
+          "name": "Value",
+          "description": "New cumulative cost in the entry currency; negative values are valid. One value belongs to one cost sensor — call the service once per sensor. During a price gap the value you set supersedes energy tracked but not yet priced; it will not be charged again when the price returns."
+        }
+      }
     }
   },
   "exceptions": {
@@ -167,6 +177,18 @@
     },
     "import_verification_failed": {
       "message": "{expected} rows expected, {actual} confirmed for {appliance}. The write may still complete in the background, or may have failed permanently (check the Home Assistant log). Re-running the same import is safe: if the rows landed later, overlap protection refuses and nothing is double-written; if they never landed, the re-run imports them. Confirmed rows per appliance: {rows_written}. After a partial multi-appliance outcome, re-run with the appliances filter narrowed to the appliances missing rows."
+    },
+    "calibration_single_target": {
+      "message": "One calibration value belongs to one cost sensor, but this call targets {count} ({entity_ids}). Call the service once per sensor. Nothing was changed."
+    },
+    "calibration_value_not_finite": {
+      "message": "value must be a finite number; got {value}. Nothing was changed."
+    },
+    "calibration_source_unusable": {
+      "message": "Cannot calibrate {entity}: its energy sensor {sensor} has no usable cumulative reading (state {state}, unit {unit}). The new baseline must come from a real reading — wait until {sensor} reports a numeric reading, then re-run. Nothing was changed."
+    },
+    "calibration_source_reading_negative": {
+      "message": "Cannot calibrate {entity}: its energy sensor {sensor} reports a negative cumulative reading ({reading} kWh), which must never become a baseline. Nothing was changed."
     }
   },
   "config_subentries": {
