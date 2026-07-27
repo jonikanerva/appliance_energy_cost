@@ -14,3 +14,5 @@ CONF_ENERGY_SENSOR: Final = "energy_sensor"
 CONF_CURRENCY: Final = "currency"
 
 SUBENTRY_TYPE_APPLIANCE: Final = "appliance"
+
+ATTR_PRICE_GAP_ACTIVE: Final = "price_gap_active"

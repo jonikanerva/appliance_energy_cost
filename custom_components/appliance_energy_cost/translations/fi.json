@@ -40,6 +40,13 @@
       "reconfigure_successful": "Uudelleenmääritys onnistui."
     }
   },
+  "entity": {
+    "sensor": {
+      "cost": {
+        "name": "{appliance} kustannus"
+      }
+    }
+  },
   "config_subentries": {
     "appliance": {
       "entry_type": "Laite",
