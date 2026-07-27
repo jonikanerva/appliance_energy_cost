@@ -144,14 +144,18 @@ def _parse_price_state(state: State | None, currency: str) -> _ParsedPrice:
 
 @dataclass(frozen=True, slots=True)
 class CostSensorExtraStoredData(ExtraStoredData):
-    """Restore payload: cumulative cost and the last-priced-energy baseline.
+    """Restore payload: cost, the baseline, and the baseline's energy sensor.
 
     Decimals round-trip as strings — zero float transit — because a float
     detour would drift the very cents this integration exists to get right.
+    The energy sensor id pins WHICH meter the baseline belongs to: the
+    unique_id survives a reconfigure that swaps the energy sensor, and a
+    baseline replayed against a different meter would fabricate cost.
     """
 
     cost: Decimal
     last_energy_kwh: Decimal | None
+    energy_sensor: str
 
     @override
     def as_dict(self) -> dict[str, str | None]:
@@ -161,6 +165,7 @@ class CostSensorExtraStoredData(ExtraStoredData):
             "last_energy_kwh": (
                 None if self.last_energy_kwh is None else str(self.last_energy_kwh)
             ),
+            "energy_sensor": self.energy_sensor,
         }
 
     @classmethod
@@ -171,7 +176,11 @@ class CostSensorExtraStoredData(ExtraStoredData):
         non-finite value rejects the whole payload — a partially restored
         state would be worse than the documented fallback chain.
         """
-        if "cost" not in restored or "last_energy_kwh" not in restored:
+        if (
+            "cost" not in restored
+            or "last_energy_kwh" not in restored
+            or "energy_sensor" not in restored
+        ):
             return None
         raw_cost = restored["cost"]
         if not isinstance(raw_cost, str):
@@ -179,15 +188,18 @@ class CostSensorExtraStoredData(ExtraStoredData):
         cost = parse_finite_decimal(raw_cost)
         if cost is None:
             return None
+        raw_energy_sensor = restored["energy_sensor"]
+        if not isinstance(raw_energy_sensor, str) or not raw_energy_sensor:
+            return None
         raw_baseline = restored["last_energy_kwh"]
         if raw_baseline is None:
-            return cls(cost=cost, last_energy_kwh=None)
+            return cls(cost=cost, last_energy_kwh=None, energy_sensor=raw_energy_sensor)
         if not isinstance(raw_baseline, str):
             return None
         baseline = parse_finite_decimal(raw_baseline)
         if baseline is None:
             return None
-        return cls(cost=cost, last_energy_kwh=baseline)
+        return cls(cost=cost, last_energy_kwh=baseline, energy_sensor=raw_energy_sensor)
 
 
 # RestoreSensor is deliberately NOT used: its async_get_last_sensor_data
@@ -257,10 +269,11 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
     @property
     @override
     def extra_restore_state_data(self) -> CostSensorExtraStoredData:
-        """Persist the cumulative cost and the last-priced-energy baseline."""
+        """Persist the cost, the baseline, and the baseline's energy sensor."""
         return CostSensorExtraStoredData(
             cost=self._accrual.cost,
             last_energy_kwh=self._accrual.last_energy_kwh,
+            energy_sensor=self._energy_sensor,
         )
 
     async def async_added_to_hass(self) -> None:
@@ -313,17 +326,43 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
     ) -> AccrualState:
         """Rebuild the accrual state from the previous run (fallback chain).
 
-        (1) Intact extra data restores cost and baseline; (2) unusable extra
-        data falls back to the last state string for the cost with the
-        baseline dropped — the next reading re-baselines without double
-        counting; (3) nothing usable restarts at 0 with the statistics
-        consequence named. The restored price is always ``None``: the
-        current price is re-read at setup. ``last_reading_kwh`` initialises
-        to the restored baseline (it is deliberately not persisted).
+        (1) Intact extra data restores cost and baseline — unless the
+        baseline belongs to a different energy sensor (a reconfigure swap),
+        in which case the cost is kept and the baseline dropped; (2)
+        unusable extra data falls back to the last state string for the
+        cost with the baseline dropped — the next reading re-baselines
+        without double counting; (3) nothing usable restarts at 0 with the
+        statistics consequence named. The restored price is always
+        ``None``: the current price is re-read at setup.
+        ``last_reading_kwh`` initialises to the restored baseline (it is
+        deliberately not persisted).
         """
         if extra_data is not None:
             restored = CostSensorExtraStoredData.from_dict(extra_data.as_dict())
             if restored is not None:
+                if restored.energy_sensor != self._energy_sensor:
+                    # A reconfigure swapped the energy sensor: the baseline
+                    # belongs to the old meter, and replaying it against the
+                    # new meter's reading would fabricate cost (a bogus
+                    # accrual on a higher reading, a bogus METER_RESET
+                    # charge on a >10% lower one). Keep the cost, drop the
+                    # baseline: the next reading re-baselines without
+                    # charging (BASELINE_INITIALISED). Logged once, at setup.
+                    _LOGGER.info(
+                        "%s: energy sensor changed from %s to %s — cumulative cost %s"
+                        " kept; the baseline re-initialises from the new sensor's"
+                        " next reading without charging",
+                        self.entity_id,
+                        restored.energy_sensor,
+                        self._energy_sensor,
+                        restored.cost,
+                    )
+                    return AccrualState(
+                        cost=restored.cost,
+                        last_energy_kwh=None,
+                        last_reading_kwh=None,
+                        price_per_kwh=None,
+                    )
                 return AccrualState(
                     cost=restored.cost,
                     last_energy_kwh=restored.last_energy_kwh,

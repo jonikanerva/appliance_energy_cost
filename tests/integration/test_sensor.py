@@ -40,6 +40,7 @@ from custom_components.appliance_energy_cost.const import (
 
 PRICE_SENSOR = "sensor.electricity_price"
 ENERGY_SENSOR = "sensor.heat_pump_energy"
+ENERGY_SENSOR_B = "sensor.replacement_meter_energy"
 COST_ENTITY = "sensor.heat_pump_cost"
 
 
@@ -145,6 +146,81 @@ async def test_rename_reload_round_trip_keeps_cost_to_the_cent(hass: HomeAssista
     assert _cost(hass) == Decimal("1.50")
 
 
+async def test_energy_sensor_swap_keeps_cost_and_rebaselines(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Reconfigure swap: cost survives to the cent, nothing charged at swap.
+
+    The restored baseline belongs to the old meter; replaying it against
+    the new meter's (much higher) reading would fabricate a bogus accrual.
+    """
+    caplog.set_level(logging.INFO)
+    hass.states.async_set(PRICE_SENSOR, "0.50", _price_attrs())
+    hass.states.async_set(ENERGY_SENSOR, "100.0", _energy_attrs())
+    entry = await _setup_entry(hass)
+    hass.states.async_set(ENERGY_SENSOR, "102.0", _energy_attrs())
+    await hass.async_block_till_done()
+    assert _cost(hass) == Decimal("1.00")
+
+    hass.states.async_set(ENERGY_SENSOR_B, "5000.0", _energy_attrs())
+    subentry = next(iter(entry.subentries.values()))
+    hass.config_entries.async_update_subentry(
+        entry,
+        subentry,
+        data={CONF_ENERGY_SENSOR: ENERGY_SENSOR_B},
+        unique_id=ENERGY_SENSOR_B,
+    )
+    await hass.async_block_till_done()
+
+    # Cost survives exactly; the new sensor's 5000 kWh charges nothing.
+    state = hass.states.get(COST_ENTITY)
+    assert state is not None
+    assert Decimal(state.state) == Decimal("1.00")
+    assert state.attributes[CONF_ENERGY_SENSOR] == ENERGY_SENSOR_B
+    swap_logs = [
+        r
+        for r in _integration_records(caplog, logging.INFO)
+        if "energy sensor changed" in r.message
+    ]
+    assert len(swap_logs) == 1
+
+    # The next delta on the new sensor charges from the new baseline.
+    hass.states.async_set(ENERGY_SENSOR_B, "5002.0", _energy_attrs())
+    await hass.async_block_till_done()
+    assert _cost(hass) == Decimal("2.00")
+
+
+async def test_energy_sensor_swap_to_lower_reading_never_fabricates_reset(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A swap to a >10%-lower reading must not trip METER_RESET fabrication."""
+    hass.states.async_set(PRICE_SENSOR, "0.50", _price_attrs())
+    hass.states.async_set(ENERGY_SENSOR, "100.0", _energy_attrs())
+    entry = await _setup_entry(hass)
+    hass.states.async_set(ENERGY_SENSOR, "102.0", _energy_attrs())
+    await hass.async_block_till_done()
+    assert _cost(hass) == Decimal("1.00")
+
+    # 5.0 < 0.9 * 102.0: a leaked baseline would classify this as a reset
+    # and charge the whole 5 kWh reading as fabricated consumption.
+    hass.states.async_set(ENERGY_SENSOR_B, "5.0", _energy_attrs())
+    subentry = next(iter(entry.subentries.values()))
+    hass.config_entries.async_update_subentry(
+        entry,
+        subentry,
+        data={CONF_ENERGY_SENSOR: ENERGY_SENSOR_B},
+        unique_id=ENERGY_SENSOR_B,
+    )
+    await hass.async_block_till_done()
+
+    assert _cost(hass) == Decimal("1.00")
+    assert not any("meter reset detected" in r.message for r in caplog.records)
+
+    hass.states.async_set(ENERGY_SENSOR_B, "6.0", _energy_attrs())
+    await hass.async_block_till_done()
+    assert _cost(hass) == Decimal("1.50")
+
+
 async def test_restart_restore_prices_downtime_delta_at_returning_price(
     hass: HomeAssistant,
 ) -> None:
@@ -154,7 +230,11 @@ async def test_restart_restore_prices_downtime_delta_at_returning_price(
         [
             (
                 State(COST_ENTITY, "5.000"),
-                {"cost": "5.000", "last_energy_kwh": "100.0"},
+                {
+                    "cost": "5.000",
+                    "last_energy_kwh": "100.0",
+                    "energy_sensor": ENERGY_SENSOR,
+                },
             )
         ],
     )
