@@ -1,0 +1,12 @@
+# Version-bump procedure — three pin surfaces move together:
+#   1. Bump pytest-homeassistant-custom-component in pyproject.toml (it owns the
+#      homeassistant / pytest / pytest-asyncio / syrupy / freezegun pins).
+#   2. Re-check the newly pinned homeassistant release's requires_python floor.
+#   3. Move the [tools].python pin below to satisfy that floor.
+#   4. Run `uv lock` to refresh uv.lock.
+[tools]
+python = "3.14.6"
+uv = "0.11.32"
+
+[tasks.setup]
+run = "uv sync"
