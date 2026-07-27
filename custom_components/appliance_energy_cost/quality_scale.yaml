@@ -1,65 +1,183 @@
 # Integration Quality Scale rule tracking.
-# Every current rule (developers.home-assistant.io/docs/core/integration-quality-scale,
-# checked 2026-07-27) starts as todo; per-rule analysis is issue #8.
+# Rule-by-rule adjudication from the issue #8 team review (2026-07-27) against
+# the current rule set (developers.home-assistant.io/docs/core/integration-quality-scale,
+# checked 2026-07-27 in issue #1's pass). Binding calls recorded in the #8 PR:
+# devices is todo (not exempt — the "no entities" exemption precedents do not
+# apply here); every exempt row carries its reason; done rows with a comment
+# name a deliberate design the rule's default reading would miss.
 rules:
   # Bronze
   action-setup: done
-  appropriate-polling: todo
-  brands: todo
-  common-modules: todo
-  config-flow-test-coverage: todo
-  config-flow: todo
-  dependency-transparency: todo
-  docs-actions: todo
-  docs-triggers: todo
-  docs-conditions: todo
-  docs-high-level-description: todo
-  docs-installation-instructions: todo
-  docs-removal-instructions: todo
-  entity-event-setup: todo
-  entity-unique-id: todo
-  has-entity-name: todo
-  runtime-data: todo
-  test-before-configure: todo
-  test-before-setup: todo
-  unique-config-entry: todo
+  appropriate-polling:
+    status: exempt
+    comment: >-
+      Event-driven by design: cost sensors consume state-change events from
+      the user's source sensors; nothing polls and there is no update
+      interval.
+  brands:
+    status: todo
+    comment: Logo/icon submission to home-assistant/brands is issue #12.
+  common-modules:
+    status: done
+    comment: >-
+      No coordinator by design — the platform is event-driven, there is no
+      polled data seam. Pure logic lives in dedicated framework-free modules
+      (accrual.py, backfill.py, units.py, models.py).
+  config-flow-test-coverage:
+    status: todo
+    comment: >-
+      Coverage is not measured in this repo yet; adding pytest-cov and
+      adjudicating the bar is issue #23.
+  config-flow: done
+  dependency-transparency: done
+  docs-actions:
+    status: todo
+    comment: README documentation work is issue #9.
+  docs-triggers:
+    status: exempt
+    comment: The integration provides no triggers.
+  docs-conditions:
+    status: exempt
+    comment: The integration provides no conditions.
+  docs-high-level-description:
+    status: todo
+    comment: README documentation work is issue #9.
+  docs-installation-instructions:
+    status: todo
+    comment: README documentation work is issue #9.
+  docs-removal-instructions:
+    status: todo
+    comment: README documentation work is issue #9.
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  test-before-setup:
+    status: done
+    comment: >-
+      Deliberate split: a structural config decode failure raises
+      ConfigEntryError at setup; availability of the referenced source
+      entities is deliberately a runtime degraded state owned by the sensor
+      platform, not a setup gate — sources may legitimately be down while
+      Home Assistant is starting.
+  unique-config-entry: done
 
   # Silver
-  action-exceptions: todo
-  config-entry-unloading: todo
-  docs-configuration-parameters: todo
-  docs-installation-parameters: todo
-  entity-unavailable: todo
-  integration-owner: todo
-  log-when-unavailable: todo
-  parallel-updates: todo
-  reauthentication-flow: todo
-  test-coverage: todo
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters:
+    status: todo
+    comment: README documentation work is issue #9.
+  docs-installation-parameters:
+    status: todo
+    comment: README documentation work is issue #9.
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable: done
+  parallel-updates: done
+  reauthentication-flow:
+    status: exempt
+    comment: >-
+      No credentials or accounts exist: the integration only reads local
+      entity states.
+  test-coverage:
+    status: todo
+    comment: >-
+      Coverage is not measured in this repo yet; adding pytest-cov and
+      adjudicating the bar is issue #23.
 
   # Gold
-  devices: todo
-  diagnostics: todo
-  discovery-update-info: todo
-  discovery: todo
-  docs-data-update: todo
-  docs-examples: todo
-  docs-known-limitations: todo
-  docs-supported-devices: todo
-  docs-supported-functions: todo
-  docs-troubleshooting: todo
-  docs-use-cases: todo
-  dynamic-devices: todo
-  entity-category: todo
-  entity-device-class: todo
-  entity-disabled-by-default: todo
-  entity-translations: todo
-  exception-translations: todo
-  icon-translations: todo
-  reconfiguration-flow: todo
-  repair-issues: todo
-  stale-devices: todo
+  devices:
+    status: todo
+    comment: >-
+      Not exempt — core's exemption precedents cover integrations with no
+      entities, which does not apply here. The intended shape (attach each
+      cost sensor to its energy source's device, utility_meter-style) is
+      coupled with issue #14's device-linking + rename-tracking unit and
+      tracked in issue #23.
+  diagnostics: done
+  discovery-update-info:
+    status: exempt
+    comment: >-
+      Nothing is discoverable: the sources are user-selected local entities,
+      not devices on a network.
+  discovery:
+    status: exempt
+    comment: >-
+      Nothing is discoverable: the sources are user-selected local entities,
+      not devices on a network.
+  docs-data-update:
+    status: todo
+    comment: README documentation work is issue #9.
+  docs-examples:
+    status: todo
+    comment: README documentation work is issue #9.
+  docs-known-limitations:
+    status: todo
+    comment: README documentation work is issue #9.
+  docs-supported-devices:
+    status: exempt
+    comment: No hardware is supported; the integration costs existing entities.
+  docs-supported-functions:
+    status: todo
+    comment: README documentation work is issue #9.
+  docs-troubleshooting:
+    status: todo
+    comment: README documentation work is issue #9.
+  docs-use-cases:
+    status: todo
+    comment: README documentation work is issue #9.
+  dynamic-devices:
+    status: exempt
+    comment: >-
+      No devices are created; this exemption holds only while the devices
+      rule is unimplemented — revisit with issues #23/#14.
+  entity-category:
+    status: exempt
+    comment: >-
+      No configuration or diagnostic entities exist; the cost sensor is the
+      product itself.
+  entity-device-class: done
+  entity-disabled-by-default:
+    status: exempt
+    comment: >-
+      Every entity is the product: one cost sensor per explicitly configured
+      appliance, nothing noisy or secondary to disable.
+  entity-translations: done
+  exception-translations: done
+  icon-translations:
+    status: done
+    comment: >-
+      The cost sensor deliberately inherits the monetary device-class icon
+      per the rule's own wording ("if the entity can use the device class
+      icon, that is preferred"); service icons live in icons.json.
+  reconfiguration-flow: done
+  repair-issues:
+    status: exempt
+    comment: >-
+      All failure modes are runtime source-sensor states already surfaced on
+      the cost entity (unavailable / price_gap_active) and edge-logged per
+      the fail-visibly principle; v1 raises no repair issues.
+  stale-devices:
+    status: exempt
+    comment: >-
+      No devices are created; this exemption holds only while the devices
+      rule is unimplemented — revisit with issues #23/#14.
 
   # Platinum
-  async-dependency: todo
-  inject-websession: todo
-  strict-typing: todo
+  async-dependency:
+    status: exempt
+    comment: "manifest requirements is empty: there are no dependencies."
+  inject-websession:
+    status: exempt
+    comment: >-
+      No HTTP is performed: everything is local entity state and recorder
+      statistics.
+  strict-typing:
+    status: done
+    comment: >-
+      Custom-integration analog of the core strict-typing gate: mypy
+      --strict with disallow_any_explicit over custom_components, enforced
+      by $VERIFY_CMD on every commit; manifest requirements is empty, so no
+      dependency typing applies.
