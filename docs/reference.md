@@ -117,9 +117,11 @@ Accrual semantics, stated plainly:
 
 - **Price at the moment of consumption.** Each energy delta is charged at the
   price in force when it was metered. On a price change, energy accumulated
-  during the outgoing price period is settled at the outgoing price first, so
-  a slow-updating energy sensor never shifts consumption onto the next
-  period's price.
+  during the outgoing price period is settled at the outgoing price first —
+  up to the meter's last reported reading. The guarantee reaches exactly as
+  far as the meter has reported: a slow meter that reports boundary-hour
+  consumption only after the price change gets that delta priced at the NEW
+  price, because the old-price share was never measured.
 - **First reading baselines.** The first reading from an energy sensor only
   initialises the baseline — pre-existing consumption is never priced at
   today's price.
@@ -241,11 +243,20 @@ sensor, from history Home Assistant already stores:
   precision within the hour is reduced to the hourly mean.
 - Findings are reported per appliance, never silently dropped: hours with
   consumption but no price (`missing_price_hours`, skipped), hours with a
-  negative energy change (`invalid_energy_hours`, skipped — the recorder
-  already reset-compensates `change`, so a negative value is abnormal), and
-  hours with no energy row at all (`energy_gap_hours`, nothing to cost). A
+  negative or non-finite energy change (`invalid_energy_hours`, skipped — the
+  recorder already reset-compensates `change`, so a negative value is
+  abnormal), and hours with no energy row at all (`energy_gap_hours`). A
   zero-consumption hour without a price still produces a flat point — its
   cost delta is zero with certainty.
+- **Energy-gap hours are retro-priced, stated plainly:** energy consumed
+  during an energy-row gap is not dropped — the recorder folds it into the
+  next existing row's `change`, so it is priced at THAT hour's mean price,
+  not at the price in force when it was actually consumed. Deliberate and
+  platform-consistent (it mirrors the live gap policy: energy accumulated
+  while data is missing is priced at the price in force when data returns),
+  but it is an approximation, not consumption-time pricing. Missing-PRICE
+  hours behave differently: their consumption is never costed at all (see
+  `strict`).
 - Nothing is written without preview-and-confirm: `preview_backfill` is a dry
   run, `import_backfill` requires an explicit `confirm: true`, and every
   pre-write gate (strict findings, nothing to import, overlap, continuity,
@@ -271,10 +282,16 @@ confirmed action.
 | Field | Required | Default | Description |
 | --- | --- | --- | --- |
 | `config_entry` | yes | — | The Appliance Energy Cost entry whose appliances are previewed. |
-| `start` | yes | — | Start of the period, inclusive. Top-of-the-hour rule above. |
+| `start` | no | the price sensor's first statistics hour | Start of the period, inclusive. When omitted, resolved to the price sensor's first recorded hourly-statistics row — the earliest hour any cost can be computed — and echoed back as the normal `start` field. When supplied, the top-of-the-hour rule above applies. |
 | `end` | no | start of the current UTC hour | End of the period, exclusive. Must be after `start` and not in the future. |
 | `appliances` | no | every appliance in the entry | **Energy-sensor entity IDs** to limit the preview to. Also the recovery path when one appliance's missing statistics fail the whole call. |
 | `strict` | no | `true` | When on, `ok` is `false` if any appliance has missing-price or invalid-energy hours. When off, `ok` stays `true` and the findings are reported only in the per-appliance counts and ranges. |
+
+With both boundaries omitted and the price history beginning in the hour
+that is still compiling, the call fails with a dedicated message
+(`price_history_begins_now`): there is nothing to backfill yet. An
+appliance whose own history starts later than the price history simply
+reports the earlier hours as `energy_gap_hours` — harmless.
 
 The service *only* returns a response: called from a script or automation it
 must be given a `response_variable`. In **Developer Tools → Actions** the
@@ -340,9 +357,22 @@ preview call plus `confirm: true` is a valid import call — and adds:
 
 | Field | Required | Default | Description |
 | --- | --- | --- | --- |
+| `overwrite_existing` | no | `false`* | Proceed although the cost series already has rows in the period, updating the window's matching hourly rows for this integration's own cost series. Hours where the new series has no point keep their existing rows; rows outside the period are never touched; there is no deletion path. |
+| `calibrate` | no | `false`* | After the rows are committed and verified, set each cost sensor to continue the imported series — the [one-call backfill](#one-call-backfill-calibrate-true). |
+| `initial_cost` | no | *absent* | Cumulative cost immediately before `start`, for continuing an existing series; negative values are valid (non-finite values are rejected). Requires exactly one selected appliance — one import call per appliance when supplying it. A wrong value makes the series step at `start`. |
 | `confirm` | no | `false` | Must be true for anything to be written. The requirement exists so a pasted preview call can never write history by accident; run preview_backfill first to inspect what would be written. |
-| `overwrite_existing` | no | `false` | Proceed although the cost series already has rows in the period, updating the window's matching hourly rows for this integration's own cost series. Hours where the new series has no point keep their existing rows; rows outside the period are never touched; there is no deletion path. |
-| `initial_cost` | no | *absent* | Cumulative cost immediately before `start`, for continuing an existing series; negative values are valid. Requires exactly one selected appliance — one import call per appliance when supplying it. A wrong value makes the series step at `start`. |
+
+\* **Defaults split, deliberately:** the Developer tools **Actions** form
+prefills `overwrite_existing` and `calibrate` to on (the first-run "full
+solution" recipe — the ticked value travels explicitly in the payload), but
+the service-schema defaults are `false`, so an automation or script that
+omits either flag stays conservative. `confirm` defaults to off everywhere
+and is the last field in the form.
+
+Confirmed imports are serialised per entry: a second import call on the
+same entry waits until the first has fully committed (and calibrated, when
+requested) before its own gates run — two concurrent imports can never
+interleave a mixed series.
 
 **Absent `initial_cost` is not the same as `0`.** When it is absent and the
 cost series already has rows before `start`, the continuity gate refuses the
@@ -394,6 +424,7 @@ start: "2025-01-01T00:00:00+00:00"
 end: "2025-06-01T00:00:00+00:00"
 strict: true
 overwrite_existing: false
+calibrate: false
 initial_cost: 0.0          # echoes the effective value; 0.0 when absent
 currency: EUR
 price_sensor: sensor.electricity_price
@@ -417,10 +448,79 @@ Differences from the preview shape:
 - Adds `rows_written` per appliance, and `existing_rows_kept` **only** when
   `overwrite_existing: true` (pre-existing in-window rows the new series had
   no point for, kept as-is).
+- With `calibrate: true`, each appliance carries exactly one of
+  `calibrated_to` (the cost sensor's new cumulative value) or
+  `calibration_skipped` (the reason, with its remedy) — see the
+  [one-call backfill](#one-call-backfill-calibrate-true).
 - Drops `valid`, `hourly_points`, `expected_hours`, and the `*_ranges` lists.
 - Has **no `ok` field**: an import that returns at all has passed every gate
   and verified its rows; anything else raises an error with nothing (or, on a
   partial multi-appliance outcome, exactly the reported rows) written.
+- The post-commit verification compares the re-read rows' **sum values**
+  against the computed series (not timestamps alone), so a silently failed
+  overwrite of stale rows fails loudly instead of reporting success.
+
+### One-call backfill (`calibrate: true`)
+
+With `calibrate: true`, one confirmed import call does the whole job for the
+common case: history is imported and verified, then each cost sensor is set
+to continue the imported series — no manual formula, no per-sensor
+calibration calls, no time-skew window between reading the receipt and
+typing the value. The first-run recipe is: leave `start` and `end` empty,
+keep `overwrite_existing` and `calibrate` ticked (the form prefills them),
+tick `confirm`, run.
+
+How the calibration works, per appliance, **after** the rows are committed
+and read back:
+
+```txt
+new live value = series total_cost
+              + (current meter reading − series end_energy_kwh)
+              × the price live accrual would use next
+```
+
+computed from the exact `Decimal` series values (not the receipt's floats),
+inside the same event-loop pass — nothing can change between the checks and
+the write. A meter reset after `end` charges the full current reading as
+post-reset consumption; an unchanged reading calibrates to `total_cost`.
+
+A calibration that cannot be done safely is **skipped, per appliance,
+visibly**: the receipt carries `calibration_skipped` with the reason and its
+remedy, the same text is logged as a warning, and the import's own result is
+never affected — the rows are already committed and verified, and a
+calibration failure never rolls them back. The reasons:
+
+| Skipped because | Remedy |
+| --- | --- |
+| The import's `end` is no longer the current hour (the call crossed an hour boundary, or `end` was given in the past). | Run the same import call again — overwrite updates the committed rows in place and the calibration lands within the fresh hour. |
+| The import wrote no rows for this appliance (nothing to continue; calibrating to its total would be a mass-reset hazard). | Check the appliance's statistics or narrow the period; calibrate manually if needed. |
+| The period's last energy row carries no cumulative meter state (`end_energy_kwh` is `null`). | Re-run the import once the last hour carries a state, or calibrate manually. |
+| The live cost sensor was not reachable (the entry was reloading mid-call). | Re-run the same import call, or calibrate manually. |
+| A price gap is active at the calibration moment. | Wait for a usable price, then calibrate manually or re-run the import. |
+| The energy sensor has no usable cumulative reading at the calibration moment. | Wait until it reports a numeric reading, then calibrate manually or re-run the import. |
+| The energy sensor reports a negative cumulative reading. | Fix the source, then calibrate manually or re-run the import. |
+| The meter reading is below the import's end reading but not a reset — likely a sensor dip. | Wait for recovery, then calibrate manually or re-run the import. Calibrating a dipped reading would re-charge the recovery leg — energy the import already costed — so it is never done automatically. |
+| The computed value is not a finite number. | Check the receipt's totals and calibrate manually. |
+| The calibration raised an unexpected error after the rows were committed. | See the Home Assistant log; calibrate manually or re-run the import. |
+
+Honest limits, stated plainly:
+
+- **The hour gate guarantees same-hour, not same-price.** Under sub-hour
+  price products (15-minute pricing), the metered-since-`end` delta is
+  priced at the price in force at the calibration moment, which can differ
+  within the hour from the consumption-time price. Identical to the manual
+  recipe's limitation; tracked as a possible tightening in
+  [issue #44](https://github.com/jonikanerva/appliance_energy_cost/issues/44).
+- **A pathologically long import can never pass the hour gate.** The gate
+  requires `end` to still be the current hour when the calibration runs; an
+  import whose wall time consistently exceeds one hour therefore skips on
+  every re-run. The escape is the manual route: per-appliance `initial_cost`
+  imports over narrow windows, then `calibrate_cost` by hand.
+- **The not-yet-compiled tail hour is priced at the current price.** Even
+  with a state-bearing last row, the hours between the last compiled
+  statistics row and now have no statistics yet; the metered-since-`end`
+  delta covering them is priced at the current price — the same
+  approximation the manual recipe makes.
 
 ### calibrate_cost
 
@@ -459,10 +559,14 @@ INFO level.
 
 ## Cutover: joining live to imported history
 
-Importing history never changes the live sensor: after an import, the live
-cumulative value still starts wherever live accrual started (typically 0),
-while imported history ends at the receipt's `total_cost`. The cutover is one
-`calibrate_cost` call that makes the live series continue the imported one.
+Importing history alone never changes the live sensor: after an import, the
+live cumulative value still starts wherever live accrual started (typically
+0), while imported history ends at the receipt's `total_cost`. The cutover
+makes the live series continue the imported one — and the
+[one-call backfill](#one-call-backfill-calibrate-true) (`calibrate: true`)
+does it automatically inside the import call, which is the recommended path.
+The manual recipe below remains for the cases the one-call flow skips (its
+receipt names the remedy), and for corrections.
 
 ### Standard cutover
 
@@ -522,7 +626,9 @@ If the cost sensor has been live for days or weeks before the import, its
 already-compiled statistics start from 0 at the hour it went live. Importing
 only the pre-live window then leaves a recorded mismatch at the boundary
 where imported history meets the live rows — and calibration cannot fix a
-mismatch that is already recorded. The remedy is to move the boundary to now:
+mismatch that is already recorded. The remedy is to move the boundary to now
+— which is exactly what the one-call defaults do (`start` and `end` empty,
+`overwrite_existing: true`, `calibrate: true`). Manually:
 
 1. Run `preview_backfill` over the whole `[history start, current hour)`.
 2. Run `import_backfill` over the same period with `overwrite_existing: true`
@@ -633,6 +739,9 @@ Service errors, with their remedies:
 | `… rows expected, … confirmed …` (verification failed) | Re-running the same import is safe: if the rows landed later, overlap protection refuses and nothing is double-written; if they never landed, the re-run imports them. After a partial multi-appliance outcome, re-run with the `appliances` filter narrowed to the appliances missing rows. |
 | `This service writes historical cost rows …` (confirm required) | Run `preview_backfill` first to inspect what would be written, then call again with `confirm: true`. |
 | `No importable hourly points between …` | Run `preview_backfill` to see what the period contains — commonly the period predates one source's statistics. |
+| `The price sensor's history begins in the current hour …` | The default `start` resolved to the current, still-compiling hour. Wait for the hour to end (its statistics compile then) and re-run. |
+| `initial_cost must be a finite number …` | The call carried `Infinity`/`NaN` (YAML coerces those strings to floats). Supply a finite number. |
+| `… calibration skipped …` (warning, with `calibrate: true`) | Per-appliance and never fatal: the receipt's `calibration_skipped` carries the same reason with its remedy — see the [one-call backfill](#one-call-backfill-calibrate-true) table. |
 
 For a bug report, download diagnostics from the integration's entry page
 (**Settings → Devices & services → Appliance Energy Cost**). Entity IDs and

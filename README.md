@@ -81,19 +81,21 @@ that — the past shows up in the same charts. Nothing is written without a
 preview and an explicit confirm.
 
 1. Open **Developer tools → Actions** and pick
-   **Appliance Energy Cost: Preview backfill**. Choose the integration entry,
-   pick the start of the period at a full hour (minutes 00 — your local time
-   is fine), and leave **End** empty to backfill up to now. Run it.
-2. Read the summary it returns: `ok` should be `true`, each appliance's point
-   count should be roughly the number of hours in your period, and the gap
-   counters should be zero. Anything else — check the technical reference
-   before importing.
-3. Pick **Appliance Energy Cost: Import backfill**, fill in the same values,
-   tick **Confirm**, and run it. The rows-written count in the response
-   confirms the history landed.
-4. If the cost sensor was already counting before you imported, join the two
-   series — otherwise the chart shows a large drop where imported history
-   meets the live sensor. Follow "Cutover" in the technical reference.
+   **Appliance Energy Cost: Preview energy cost backfill**. Choose the
+   integration entry and leave **Start** and **End** empty — the defaults
+   cover everything from the first hour your price sensor recorded up to
+   now. Run it.
+2. Read the summary it returns: `ok` should be `true` and each appliance's
+   point count should look like the hours its history covers. Anything
+   unexpected — check the technical reference before importing.
+3. Pick **Appliance Energy Cost: Import energy cost backfill** with the same
+   values, keep **Overwrite existing** and **Calibrate cost sensors** ticked
+   (the form pre-ticks them), tick **Confirm**, and run it. The response
+   confirms the rows written and shows each live sensor's new value — the
+   history lands in the charts and the sensors continue seamlessly from it.
+4. If the response shows a `calibration_skipped` reason for an appliance,
+   the history is still imported; the reason names the remedy (usually:
+   run the same import again). Details in the technical reference.
 
 ## Remove
 
