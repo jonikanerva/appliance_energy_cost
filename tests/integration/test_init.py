@@ -21,7 +21,7 @@ async def test_integration_is_discoverable(hass: HomeAssistant) -> None:
     """The custom integration resolves through the HA loader with its metadata."""
     integration = await async_get_integration(hass, DOMAIN)
     assert integration.domain == DOMAIN
-    assert integration.version == "0.1.0"
+    assert integration.version == "1.0.0"
 
 
 async def test_setup_succeeds_with_sources_absent_and_unloads_cleanly(
