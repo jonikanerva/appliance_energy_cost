@@ -204,7 +204,7 @@
       "step": {
         "user": {
           "title": "Add appliance",
-          "description": "Name the appliance and pick its existing cumulative energy sensor. The appliance's cost sensor prices consumed energy at the price in force at the moment of consumption.",
+          "description": "Name the appliance and pick its existing cumulative energy sensor. The appliance's cost sensor prices consumed energy at the price in force at the moment of consumption. One entry can cost any number of appliances — add more at any time from the integration page with Add appliance.",
           "data": {
             "name": "Name",
             "energy_sensor": "Energy sensor"
