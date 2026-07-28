@@ -32,7 +32,11 @@ rules:
       gate that bare `uv run pytest` enforces.
   config-flow: done
   dependency-transparency: done
-  docs-actions: done
+  docs-actions:
+    status: done
+    comment: >-
+      Full action reference (fields, defaults, response shapes, examples)
+      in docs/reference.md, linked from the README (issue #36).
   docs-triggers:
     status: exempt
     comment: The integration provides no triggers.
@@ -60,8 +64,16 @@ rules:
   # Silver
   action-exceptions: done
   config-entry-unloading: done
-  docs-configuration-parameters: done
-  docs-installation-parameters: done
+  docs-configuration-parameters:
+    status: done
+    comment: >-
+      Full configuration reference (parameters, currency immutability,
+      error table) in docs/reference.md, linked from the README (issue #36).
+  docs-installation-parameters:
+    status: done
+    comment: >-
+      Config-flow parameters and source-sensor requirements in
+      docs/reference.md, linked from the README (issue #36).
   entity-unavailable: done
   integration-owner: done
   log-when-unavailable: done
@@ -97,14 +109,34 @@ rules:
     comment: >-
       Nothing is discoverable: the sources are user-selected local entities,
       not devices on a network.
-  docs-data-update: done
-  docs-examples: done
-  docs-known-limitations: done
+  docs-data-update:
+    status: done
+    comment: >-
+      Event-driven update model documented in docs/reference.md → The cost
+      sensor, linked from the README (issue #36).
+  docs-examples:
+    status: done
+    comment: >-
+      YAML action examples and the utility_meter recipe in
+      docs/reference.md, linked from the README (issue #36).
+  docs-known-limitations:
+    status: done
+    comment: >-
+      Known-limitations list in docs/reference.md, linked from the README
+      (issue #36).
   docs-supported-devices:
     status: exempt
     comment: No hardware is supported; the integration costs existing entities.
-  docs-supported-functions: done
-  docs-troubleshooting: done
+  docs-supported-functions:
+    status: done
+    comment: >-
+      Cost-sensor contract, accrual semantics and attributes in
+      docs/reference.md, linked from the README (issue #36).
+  docs-troubleshooting:
+    status: done
+    comment: >-
+      Log-message and service-error tables plus diagnostics guidance in
+      docs/reference.md, linked from the README (issue #36).
   docs-use-cases: done
   dynamic-devices:
     status: exempt
