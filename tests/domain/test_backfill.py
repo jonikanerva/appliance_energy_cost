@@ -170,6 +170,8 @@ def test_end_energy_comes_from_the_last_state() -> None:
 
 
 def test_end_energy_is_unit_converted_and_tracked_through_invalid_rows() -> None:
+    # The LAST row's state counts REGARDLESS of the row's validity: a
+    # skipped row's reading is still the meter's level (issue #42 pin).
     result = _build(
         [
             {"start": _hour(0), "change": 1_000.0, "state": 122_500.0},
@@ -180,6 +182,106 @@ def test_end_energy_is_unit_converted_and_tracked_through_invalid_rows() -> None
     )
     assert result.end_energy_kwh == D("123.5")
     assert result.invalid_energy_hours == (_hour_dt(1),)
+
+
+def test_end_energy_is_none_when_the_last_row_carries_no_state() -> None:
+    """Stale-last regression (issue #42 audit fold, the PR #40 doc contract).
+
+    An earlier row's state must never leak into end_energy_kwh when the
+    period's LAST row carries none: a stale reading fed into the cutover
+    formula would double-charge the tail.
+    """
+    result = _build(
+        [
+            {"start": _hour(0), "change": 1.0, "state": 122.5},
+            {"start": _hour(1), "change": 1.0},
+        ],
+        [
+            {"start": _hour(0), "mean": 0.1},
+            {"start": _hour(1), "mean": 0.1},
+        ],
+    )
+    assert result.end_energy_kwh is None
+    # Both hours still cost normally: the state field never affects pricing.
+    assert result.total_cost == D("0.2")
+
+
+def test_end_energy_is_none_when_the_last_row_state_is_none() -> None:
+    result = _build(
+        [
+            {"start": _hour(0), "change": 1.0, "state": 122.5},
+            {"start": _hour(1), "change": 1.0, "state": None},
+        ],
+        [
+            {"start": _hour(0), "mean": 0.1},
+            {"start": _hour(1), "mean": 0.1},
+        ],
+    )
+    assert result.end_energy_kwh is None
+
+
+def test_end_energy_uses_the_last_row_by_start_on_unsorted_input() -> None:
+    result = _build(
+        [
+            {"start": _hour(1), "change": 1.0, "state": 123.5},
+            {"start": _hour(0), "change": 1.0, "state": 122.5},
+        ],
+        [
+            {"start": _hour(0), "mean": 0.1},
+            {"start": _hour(1), "mean": 0.1},
+        ],
+    )
+    assert result.end_energy_kwh == D("123.5")
+
+
+def test_non_finite_last_state_is_treated_as_absent() -> None:
+    """Ingestion-edge finiteness on the state field (issue #42 amendment 3).
+
+    Infinity survives SQLite (NaN does not — coerced to NULL), so both are
+    guarded at our edge: a non-finite state means end_energy_kwh is None and
+    the one-call calibration skips visibly instead of computing from it.
+    """
+    for bad_state in (float("inf"), float("-inf"), float("nan")):
+        result = _build(
+            [{"start": _hour(0), "change": 1.0, "state": bad_state}],
+            [{"start": _hour(0), "mean": 0.1}],
+        )
+        assert result.end_energy_kwh is None
+        assert result.total_cost == D("0.1")
+
+
+def test_non_finite_change_is_invalid_and_skipped() -> None:
+    for bad_change in (float("inf"), float("-inf"), float("nan")):
+        result = _build(
+            [{"start": _hour(0), "change": bad_change}],
+            [{"start": _hour(0), "mean": 0.1}],
+        )
+        assert result.points == ()
+        assert result.invalid_energy_hours == (_hour_dt(0),)
+        assert result.total_energy_kwh == D("0")
+        assert result.total_cost == D("0")
+
+
+def test_non_finite_price_is_treated_as_a_missing_price() -> None:
+    for bad_price in (float("inf"), float("-inf"), float("nan")):
+        result = _build(
+            [{"start": _hour(0), "change": 1.0}],
+            [{"start": _hour(0), "mean": bad_price}],
+        )
+        assert result.points == ()
+        assert result.missing_price_hours == (_hour_dt(0),)
+        assert result.total_cost == D("0")
+
+
+def test_non_finite_price_mean_does_not_fall_back_to_state() -> None:
+    # The mean-over-state preference applies before the finiteness guard:
+    # a non-finite mean makes the HOUR unpriced rather than silently
+    # repricing it from the state field.
+    result = _build(
+        [{"start": _hour(0), "change": 1.0}],
+        [{"start": _hour(0), "mean": float("inf"), "state": 0.25}],
+    )
+    assert result.missing_price_hours == (_hour_dt(0),)
 
 
 def test_negative_price_decreases_the_cumulative_sum() -> None:

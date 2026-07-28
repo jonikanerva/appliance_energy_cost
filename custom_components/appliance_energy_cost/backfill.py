@@ -11,6 +11,7 @@ only at the two documented exit points (``CostPoint.state`` / ``.sum``).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -55,7 +56,10 @@ class BackfillSeries:
     """Calculated backfill series with its validation report.
 
     The first/last point are derivable from ``points`` and deliberately
-    not duplicated here.
+    not duplicated here. ``end_energy_kwh`` is ``None`` unless the period's
+    LAST energy row — last by ``start``, regardless of validity, because a
+    skipped row's reading is still the meter's level — carries a finite
+    cumulative ``state``.
     """
 
     points: tuple[CostPoint, ...]
@@ -73,6 +77,19 @@ ZERO_TOLERANCE_KWH: Final = Decimal("1E-9")
 def _timestamp_key(start: float) -> int:
     """Normalise an epoch-seconds timestamp to the integer alignment key."""
     return round(start)
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    """Treat a non-finite wire value as absent — the ingestion finiteness edge.
+
+    SQLite coerces NaN to NULL but lets Infinity through, and PostgreSQL
+    preserves NaN — so both are guarded here at our edge regardless of the
+    backing database: a non-finite price, change, or state can never price,
+    measure, or baseline anything (issue #42 audit fold).
+    """
+    if value is None or not math.isfinite(value):
+        return None
+    return value
 
 
 def _row_start(row: EnergyRow) -> float:
@@ -105,10 +122,16 @@ def build_backfill_series(
     skipped (Recorder already reset-compensates ``change``, so a negative
     value is abnormal). A negative *price* is valid and may decrease the
     cumulative sum. ``price_unit`` is the energy denominator of the price.
+
+    Non-finite wire values fail closed at this edge (``_finite_or_none``):
+    a non-finite price is an absent price, a non-finite ``change`` is an
+    invalid-energy hour, and a non-finite ``state`` is an absent state.
+    ``end_energy_kwh`` follows the ``BackfillSeries`` contract: ``None``
+    unless the period's last energy row carries a finite ``state``.
     """
     prices: dict[int, Decimal] = {}
     for price_row in price_rows:
-        raw_price = _price_value(price_row)
+        raw_price = _finite_or_none(_price_value(price_row))
         if raw_price is not None:
             prices[_timestamp_key(price_row["start"])] = to_price_per_kwh(
                 Decimal(str(raw_price)), price_unit
@@ -116,20 +139,16 @@ def build_backfill_series(
 
     running_cost = initial_cost
     total_energy = Decimal("0")
-    end_energy: Decimal | None = None
     points: list[CostPoint] = []
     missing_price_hours: list[datetime] = []
     invalid_energy_hours: list[datetime] = []
 
-    for row in sorted(energy_rows, key=_row_start):
+    sorted_rows = sorted(energy_rows, key=_row_start)
+    for row in sorted_rows:
         key = _timestamp_key(row["start"])
         start = datetime.fromtimestamp(key, tz=UTC)
 
-        raw_state = row.get("state")
-        if raw_state is not None:
-            end_energy = to_kwh(Decimal(str(raw_state)), energy_unit)
-
-        raw_change = row.get("change")
+        raw_change = _finite_or_none(row.get("change"))
         if raw_change is None:
             invalid_energy_hours.append(start)
             continue
@@ -152,6 +171,15 @@ def build_backfill_series(
         total_energy += change
         running_cost += change * price
         points.append(CostPoint(start=start, state=float(running_cost), sum=float(running_cost)))
+
+    # The LAST row's state — regardless of the row's validity — is the
+    # meter's level at end; an earlier row's state would be stale and, fed
+    # into the cutover formula, would double-charge the tail (issue #42).
+    end_energy: Decimal | None = None
+    if sorted_rows:
+        raw_end_state = _finite_or_none(sorted_rows[-1].get("state"))
+        if raw_end_state is not None:
+            end_energy = to_kwh(Decimal(str(raw_end_state)), energy_unit)
 
     return BackfillSeries(
         points=tuple(points),

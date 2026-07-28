@@ -276,12 +276,15 @@ def apply_price(
     """Apply a price change, settling pending energy at the outgoing price first.
 
     Settle-first is binding: energy accumulated during the old price period
-    is priced at the old price before the new price takes effect, so a
-    slow-updating energy sensor never shifts consumption onto the next
-    hour's price. ``new_price_per_kwh=None`` starts a price gap;
-    a price arriving while one is active ends it (see ``_end_gap``).
-    A negative reading is discarded visibly (``INVALID_READING``) and the
-    transition falls back to the documented no-reading degraded path.
+    is priced at the old price before the new price takes effect — up to
+    the reading supplied at switch time. The guarantee reaches exactly as
+    far as the meter has reported: a slow meter that reports boundary-hour
+    consumption only after the price change prices that delta at the NEW
+    price, because the old-price share was never measured.
+    ``new_price_per_kwh=None`` starts a price gap; a price arriving while
+    one is active ends it (see ``_end_gap``). A negative reading is
+    discarded visibly (``INVALID_READING``) and the transition falls back
+    to the documented no-reading degraded path.
     """
     reading = current_energy_kwh
     invalid_events: tuple[AccrualEvent, ...] = ()
@@ -353,3 +356,43 @@ def calibrate(
         ),
         (AccrualEvent.CALIBRATED,),
     )
+
+
+def cutover_value(
+    total_cost: Decimal,
+    end_energy_kwh: Decimal,
+    reading_kwh: Decimal,
+    price_per_kwh: Decimal,
+) -> Decimal | None:
+    """The calibration value that continues an imported series live (issue #42).
+
+    ``total_cost`` and ``end_energy_kwh`` are the imported series' cumulative
+    cost and meter reading at the import's ``end``; ``reading_kwh`` is the
+    meter's current reading and ``price_per_kwh`` the price live accrual
+    would use next. The reading is classified against the import's end
+    reading with the shared ``_classify`` predicate:
+
+    - ADVANCE — the metered-since-end delta is priced at the current price:
+      ``total_cost + (reading - end_energy) * price``.
+    - UNCHANGED — nothing was metered since the import's end: ``total_cost``.
+    - RESET — the meter reset after the import's end, so the full current
+      reading is consumption since the reset: ``total_cost + reading * price``.
+    - DIP — ``None``: a dip is deliberately NOT a calibration. ``calibrate``
+      re-baselines ``last_energy_kwh`` to the current reading, so calibrating
+      a dipped reading to ``total_cost`` would classify the recovery leg back
+      to the true meter level as ADVANCE and charge it — energy the import
+      already costed. The caller maps ``None`` to a visible skip.
+
+    Negative readings are the caller's pre-check (they must never reach the
+    classifier); non-finiteness of the result is likewise the caller's
+    post-check — this function only computes.
+    """
+    match _classify(end_energy_kwh, reading_kwh):
+        case _ReadingClass.ADVANCE:
+            return total_cost + (reading_kwh - end_energy_kwh) * price_per_kwh
+        case _ReadingClass.UNCHANGED:
+            return total_cost
+        case _ReadingClass.RESET:
+            return total_cost + reading_kwh * price_per_kwh
+        case _ReadingClass.DIP:
+            return None

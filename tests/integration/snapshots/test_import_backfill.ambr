@@ -17,6 +17,7 @@
         'total_energy_kwh': 2.0,
       }),
     ]),
+    'calibrate': False,
     'currency': 'EUR',
     'end': '2026-07-20T04:00:00+00:00',
     'initial_cost': 0.0,

@@ -13,6 +13,7 @@ from custom_components.appliance_energy_cost.accrual import (
     apply_energy,
     apply_price,
     calibrate,
+    cutover_value,
 )
 
 D = Decimal
@@ -420,3 +421,81 @@ def test_total_class_legitimate_decrease_is_charged_as_a_reset() -> None:
     assert state.cost == D("5.00")
     assert state.last_energy_kwh == D("50")
     assert state.last_reading_kwh == D("50")
+
+
+def test_cutover_advance_prices_the_metered_since_end_delta() -> None:
+    value = cutover_value(
+        total_cost=D("145.27"),
+        end_energy_kwh=D("4321.0"),
+        reading_kwh=D("4322.4"),
+        price_per_kwh=D("0.12"),
+    )
+    # The documented worked example: 145.27 + 1.4 x 0.12, exactly.
+    assert value == D("145.438")
+
+
+def test_cutover_unchanged_reading_is_the_import_total() -> None:
+    value = cutover_value(
+        total_cost=D("145.27"),
+        end_energy_kwh=D("4321.0"),
+        reading_kwh=D("4321.0"),
+        price_per_kwh=D("0.12"),
+    )
+    assert value == D("145.27")
+
+
+def test_cutover_reset_charges_the_full_reading_as_post_reset_consumption() -> None:
+    # 50 < 90% of 4321: a reset — the reading IS consumption since the reset.
+    value = cutover_value(
+        total_cost=D("145.27"),
+        end_energy_kwh=D("4321.0"),
+        reading_kwh=D("50"),
+        price_per_kwh=D("0.10"),
+    )
+    assert value == D("150.27")
+
+
+def test_cutover_dip_is_not_a_calibration() -> None:
+    """BINDING (issue #42 stress-test amendment 1): DIP maps to None, never a value.
+
+    calibrate() re-baselines to the current reading, so calibrating a dipped
+    reading to total_cost would charge the recovery leg back to the true
+    meter level as ADVANCE — energy the import already costed.
+    """
+    # 4000 is between 90% of 4321 (3888.9) and 4321: a dip, not a reset.
+    value = cutover_value(
+        total_cost=D("145.27"),
+        end_energy_kwh=D("4321.0"),
+        reading_kwh=D("4000"),
+        price_per_kwh=D("0.12"),
+    )
+    assert value is None
+
+
+def test_cutover_dip_reset_boundary_uses_the_shared_predicate() -> None:
+    # Exactly 90% of the end reading is still a dip (the reset predicate is
+    # strictly-below), one step under it is a reset — _classify semantics.
+    at_boundary = cutover_value(
+        total_cost=D("10"),
+        end_energy_kwh=D("100"),
+        reading_kwh=D("90"),
+        price_per_kwh=D("1"),
+    )
+    assert at_boundary is None
+    below_boundary = cutover_value(
+        total_cost=D("10"),
+        end_energy_kwh=D("100"),
+        reading_kwh=D("89.999"),
+        price_per_kwh=D("1"),
+    )
+    assert below_boundary == D("99.999")
+
+
+def test_cutover_negative_price_is_legal() -> None:
+    value = cutover_value(
+        total_cost=D("1.00"),
+        end_energy_kwh=D("100"),
+        reading_kwh=D("102"),
+        price_per_kwh=D("-0.05"),
+    )
+    assert value == D("0.90")

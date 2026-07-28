@@ -20,7 +20,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import NamedTuple, override
+from typing import TYPE_CHECKING, NamedTuple, override
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -42,7 +42,6 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.util.json import JsonValueType
 
-from . import ApplianceEnergyCostConfigEntry
 from .accrual import (
     INITIAL_STATE,
     AccrualEvent,
@@ -51,6 +50,7 @@ from .accrual import (
     apply_energy,
     apply_price,
     calibrate,
+    cutover_value,
 )
 from .const import (
     ATTR_NEW_BASELINE_KWH,
@@ -62,6 +62,11 @@ from .const import (
     CONF_ENERGY_SENSOR,
     CONF_PRICE_SENSOR,
     DOMAIN,
+    SKIP_METER_DIP,
+    SKIP_PRICE_GAP,
+    SKIP_READING_NEGATIVE,
+    SKIP_READING_UNUSABLE,
+    SKIP_VALUE_NOT_FINITE,
     SUBENTRY_TYPE_APPLIANCE,
 )
 from .models import ApplianceConfig, EntryRuntimeData, decode_appliance_config
@@ -73,6 +78,11 @@ from .units import (
     to_kwh,
     to_price_per_kwh,
 )
+
+if TYPE_CHECKING:
+    # Annotation-only: a runtime import would cycle through __init__.py now
+    # that services.py imports this module at runtime (issue #42).
+    from . import ApplianceEnergyCostConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -619,6 +629,54 @@ class ApplianceCostSensor(RestoreEntity, SensorEntity):
             CONF_CURRENCY: self._currency,
             ATTR_PRICE_GAP_ACTIVE: self._accrual.price_per_kwh is None,
         }
+
+    @callback
+    def async_calibrate_from_import(
+        self, total_cost: Decimal, end_energy_kwh: Decimal
+    ) -> Decimal | str:
+        """Continue a just-imported series live: calibrate to the cutover value.
+
+        The one-call backfill's calibration step (issue #42). The caller has
+        already committed and verified the imported rows, so every failure
+        here maps to a skip constant that is RETURNED, never raised — a
+        post-commit calibration failure must never mask or roll back the
+        succeeded import. Returns the new cumulative cost on success, or the
+        skip-reason constant.
+
+        Synchronous on the event loop like ``async_calibrate``: no await
+        separates the pre-checks from the single mutation, so the states
+        they read cannot change under them. The price is the accrual state's
+        ``price_per_kwh`` — the SAME price live accrual would use for its
+        next settlement, so the metered-since-end delta is priced exactly as
+        live accrual would have priced it. Inputs are the ``BackfillSeries``
+        Decimals, never the receipt's floats.
+        """
+        price = self._accrual.price_per_kwh
+        if price is None:
+            return SKIP_PRICE_GAP
+        reading = _parse_energy_reading(self.hass.states.get(self._energy_sensor))
+        if reading is None:
+            return SKIP_READING_UNUSABLE
+        if reading < 0:
+            return SKIP_READING_NEGATIVE
+        value = cutover_value(
+            total_cost=total_cost,
+            end_energy_kwh=end_energy_kwh,
+            reading_kwh=reading,
+            price_per_kwh=price,
+        )
+        if value is None:
+            return SKIP_METER_DIP
+        if not value.is_finite():
+            # Defence at the sink (the ingestion edge already guards): a
+            # non-finite value can never be a cumulative cost, and raising
+            # here would abort a receipt the import already earned.
+            return SKIP_VALUE_NOT_FINITE
+        # The single mutation + INFO log path every calibration shares; its
+        # own refusals cannot fire — the pre-checks above read the same
+        # state it re-reads, with no await in between.
+        self.async_calibrate(value)
+        return value
 
     def _log_unparseable_energy_once(self, reason: str) -> None:
         """Warn on the transition into an unparseable-energy streak only."""

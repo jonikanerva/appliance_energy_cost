@@ -7,18 +7,28 @@ that narrows a stored mapping into a typed value for ``entry.runtime_data``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .const import CONF_CURRENCY, CONF_ENERGY_SENSOR, CONF_PRICE_SENSOR
 
 
 @dataclass(frozen=True, slots=True)
 class EntryRuntimeData:
-    """Decoded per-entry configuration held in ``entry.runtime_data``."""
+    """Decoded per-entry configuration held in ``entry.runtime_data``.
+
+    Also carries the entry's runtime concurrency primitive: ``import_lock``
+    serialises confirmed backfill imports per entry (issue #42) — held from
+    period resolution through the post-commit calibration pass, so two
+    concurrent imports can never interleave their read/compute/write
+    windows. Excluded from equality: the lock is entry infrastructure, not
+    decoded configuration — two decodes of the same data compare equal.
+    """
 
     price_sensor: str
     currency: str
+    import_lock: asyncio.Lock = field(default_factory=asyncio.Lock, compare=False)
 
 
 def decode_entry_config(data: Mapping[str, object]) -> EntryRuntimeData:

@@ -9,6 +9,7 @@ and is safely re-runnable.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -42,6 +43,7 @@ from syrupy.assertion import SnapshotAssertion
 from custom_components.appliance_energy_cost.const import (
     ATTR_APPLIANCE,
     ATTR_APPLIANCES,
+    ATTR_CALIBRATE,
     ATTR_CONFIG_ENTRY,
     ATTR_CONFIRM,
     ATTR_END,
@@ -260,6 +262,7 @@ async def test_clean_import_writes_previewed_rows_exactly(hass: HomeAssistant) -
     assert response[ATTR_END] == "2026-07-20T04:00:00+00:00"
     assert response[ATTR_STRICT] is True
     assert response[ATTR_OVERWRITE_EXISTING] is False
+    assert response[ATTR_CALIBRATE] is False
     assert response[ATTR_INITIAL_COST] == 0.0
     assert response[CONF_CURRENCY] == "EUR"
     assert response[CONF_PRICE_SENSOR] == PRICE_SENSOR
@@ -917,6 +920,182 @@ async def test_strict_false_skips_and_never_costs_skipped_hours(hass: HomeAssist
     # Hour 3 contributes only its own 1 kWh x 0.4: the 2 kWh consumed in
     # the skipped hours never enter the sum.
     assert rows[1]["change"] == 0.4
+
+
+async def test_default_start_resolves_and_echoes_in_the_receipt(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Omitted start on the import path: resolved, echoed, and imported."""
+    entry = await _setup_entry(hass)
+    freezer.move_to("2026-07-20 06:30:00+00:00")
+    _seed_energy(hass, ENERGY_SENSOR, _clean_energy_rows())
+    _seed_price(hass, _clean_price_rows())
+    await async_wait_recording_done(hass)
+
+    response = await _call_import(hass, entry, **{ATTR_START: None, ATTR_END: None})
+    assert response[ATTR_START] == "2026-07-20T00:00:00+00:00"
+    assert response[ATTR_END] == "2026-07-20T06:00:00+00:00"
+    (receipt,) = _receipts(response)
+    assert receipt[ATTR_ROWS_WRITTEN] == 4
+    assert receipt[ATTR_ENERGY_GAP_HOURS] == 2
+
+    await async_wait_recording_done(hass)
+    assert len(_cost_rows(hass)) == 4
+
+
+async def test_default_start_without_price_statistics_on_the_import_path(
+    hass: HomeAssistant,
+) -> None:
+    """No price statistics at all: the import path resolution fails the same way."""
+    entry = await _setup_entry(hass)
+    _seed_energy(hass, ENERGY_SENSOR, _clean_energy_rows())
+    await async_wait_recording_done(hass)
+
+    with pytest.raises(ServiceValidationError) as excinfo:
+        await _call_import(hass, entry, **{ATTR_START: None})
+    assert excinfo.value.translation_key == "price_sensor_no_statistics"
+
+    await async_wait_recording_done(hass)
+    assert get_metadata(hass, statistic_ids={COST_ENTITY}) == {}
+    assert _cost_rows(hass) == []
+
+
+@pytest.mark.parametrize("bad_value", ["Infinity", "-Infinity", "nan"])
+async def test_non_finite_initial_cost_is_rejected_with_nothing_written(
+    hass: HomeAssistant, bad_value: str
+) -> None:
+    """Audit fold (issue #42, REPRODUCED): initial_cost: Infinity wrote inf rows.
+
+    vol.Coerce(float) happily coerces "Infinity"/"nan" strings, so the
+    handler applies the same finiteness gate calibrate_cost's value uses.
+    """
+    entry = await _setup_entry(hass)
+    _seed_energy(hass, ENERGY_SENSOR, _clean_energy_rows())
+    _seed_price(hass, _clean_price_rows())
+    await async_wait_recording_done(hass)
+
+    with pytest.raises(ServiceValidationError) as excinfo:
+        await _call_import(hass, entry, **{ATTR_INITIAL_COST: bad_value})
+    assert excinfo.value.translation_domain == DOMAIN
+    assert excinfo.value.translation_key == "initial_cost_not_finite"
+
+    await async_wait_recording_done(hass)
+    assert get_metadata(hass, statistic_ids={COST_ENTITY}) == {}
+    assert _cost_rows(hass) == []
+
+
+async def test_verification_fails_on_stale_values_under_overwrite(
+    hass: HomeAssistant,
+) -> None:
+    """BINDING (issue #42 amendment 4): stale values must fail verification.
+
+    Every window hour already holds a stale row, so a silently failed
+    overwrite UPDATE leaves the expected TIMESTAMPS fully present — a
+    timestamp-only comparison would report success over stale rows
+    (REPRODUCED by the audit). The sum-value comparison must fail it.
+    """
+    entry = await _setup_entry(hass)
+    _seed_energy(hass, ENERGY_SENSOR, _clean_energy_rows())
+    _seed_price(hass, _clean_price_rows())
+    _seed_cost(hass, [(_hour(i), 100.0 + i) for i in range(4)])
+    await async_wait_recording_done(hass)
+
+    def _noop_import(instance: object, metadata: StatisticMetaData, *args: object) -> bool:
+        if metadata["statistic_id"] == COST_ENTITY:
+            return True  # the audit's failure mode: report done, write nothing
+        return real_import_statistics(instance, metadata, *args)
+
+    with (
+        patch(
+            "homeassistant.components.recorder.statistics.import_statistics",
+            side_effect=_noop_import,
+        ),
+        pytest.raises(HomeAssistantError) as excinfo,
+    ):
+        await _call_import(hass, entry, **{ATTR_OVERWRITE_EXISTING: True})
+    assert excinfo.value.translation_key == "import_verification_failed"
+    placeholders = excinfo.value.translation_placeholders
+    assert placeholders is not None
+    assert placeholders["expected"] == "4"
+    assert placeholders["actual"] == "0"
+
+    # The stale rows really are untouched — the write did nothing.
+    await async_wait_recording_done(hass)
+    assert _start_sums(_cost_rows(hass)) == [(_hour(i).timestamp(), 100.0 + i) for i in range(4)]
+
+
+async def test_idempotent_overwrite_rerun_passes_verification(hass: HomeAssistant) -> None:
+    """The exact round-trip counterpart of the stale-value test.
+
+    Named honest limit (issue #42 amendment 4): after an idempotent re-run,
+    stale and fresh rows hold equal values and the value comparison cannot
+    distinguish them — acceptable, the data is correct either way.
+    """
+    entry = await _setup_entry(hass)
+    _seed_energy(hass, ENERGY_SENSOR, _clean_energy_rows())
+    _seed_price(hass, _clean_price_rows())
+    await async_wait_recording_done(hass)
+
+    first = await _call_import(hass, entry)
+    (first_receipt,) = _receipts(first)
+    assert first_receipt[ATTR_ROWS_WRITTEN] == 4
+
+    second = await _call_import(hass, entry, **{ATTR_OVERWRITE_EXISTING: True})
+    (second_receipt,) = _receipts(second)
+    assert second_receipt[ATTR_ROWS_WRITTEN] == 4
+
+    await async_wait_recording_done(hass)
+    assert _start_sums(_cost_rows(hass)) == [
+        (_hour(0).timestamp(), 0.1),
+        (_hour(1).timestamp(), 0.3),
+        (_hour(2).timestamp(), 0.6),
+        (_hour(3).timestamp(), 1.0),
+    ]
+
+
+async def test_concurrent_imports_serialise_one_wins_one_refuses(
+    hass: HomeAssistant,
+) -> None:
+    """The per-entry import lock (issue #42): concurrent imports cannot interleave.
+
+    Without the lock both calls pass the overlap gate during the awaited
+    read/compute windows and both return success receipts (the verified
+    race). With it, the second call runs its gates only after the first has
+    committed, so overlap protection refuses it and the rows exist once.
+    """
+    entry = await _setup_entry(hass)
+    _seed_energy(hass, ENERGY_SENSOR, _clean_energy_rows())
+    _seed_price(hass, _clean_price_rows())
+    await async_wait_recording_done(hass)
+
+    payload = {
+        ATTR_CONFIG_ENTRY: entry.entry_id,
+        ATTR_START: _hour(0).isoformat(),
+        ATTR_END: _hour(4).isoformat(),
+        ATTR_CONFIRM: True,
+    }
+    results = await asyncio.gather(
+        hass.services.async_call(
+            DOMAIN, SERVICE_IMPORT_BACKFILL, payload, blocking=True, return_response=True
+        ),
+        hass.services.async_call(
+            DOMAIN, SERVICE_IMPORT_BACKFILL, payload, blocking=True, return_response=True
+        ),
+        return_exceptions=True,
+    )
+    receipts = [result for result in results if isinstance(result, dict)]
+    refusals = [result for result in results if isinstance(result, ServiceValidationError)]
+    assert len(receipts) == 1
+    assert len(refusals) == 1
+    assert refusals[0].translation_key == "import_overlap"
+
+    await async_wait_recording_done(hass)
+    assert _start_sums(_cost_rows(hass)) == [
+        (_hour(0).timestamp(), 0.1),
+        (_hour(1).timestamp(), 0.3),
+        (_hour(2).timestamp(), 0.6),
+        (_hour(3).timestamp(), 1.0),
+    ]
 
 
 async def test_full_receipt_snapshot_and_json_round_trip(

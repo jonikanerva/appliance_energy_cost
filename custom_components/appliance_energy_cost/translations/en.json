@@ -52,7 +52,7 @@
   },
   "services": {
     "preview_backfill": {
-      "name": "Preview backfill",
+      "name": "Preview energy cost backfill",
       "description": "Dry run of the historical cost backfill: reads the hourly long-term statistics of the entry's price sensor and appliance energy sensors and returns per-appliance point counts, totals and gaps. Writes nothing — importing is a separate, explicitly confirmed action. An ok result means the source data passed validation at preview time; the import separately enforces overlap protection and re-reads history. Price history is interpreted in the price series' current unit; if the price sensor's unit changed mid-history, older previewed figures are wrong — sanity-check the totals.",
       "fields": {
         "config_entry": {
@@ -61,7 +61,7 @@
         },
         "start": {
           "name": "Start",
-          "description": "Start of the period, inclusive. Must be a top-of-the-hour UTC instant; a value with a timezone is converted to UTC, a value without one is interpreted in the Home Assistant timezone, and after conversion minutes, seconds and microseconds must be zero."
+          "description": "Start of the period, inclusive. Defaults to the price sensor's first recorded statistics hour — the earliest hour any cost can be computed — so leaving it empty covers the whole reconstructable history. When supplied, it must be a top-of-the-hour UTC instant; a value with a timezone is converted to UTC, a value without one is interpreted in the Home Assistant timezone, and after conversion minutes, seconds and microseconds must be zero."
         },
         "end": {
           "name": "End",
@@ -78,8 +78,8 @@
       }
     },
     "import_backfill": {
-      "name": "Import backfill",
-      "description": "Writes the reconstructed historical cost series into long-term statistics. Requires an explicit confirm: true — without it nothing is written. Existing rows in the period block the import by default; overwrite_existing updates the window's matching hourly rows for this integration's own cost series — hours where the new series has no point keep their existing rows. Imports hourly rows in UTC, into long-term statistics only. Never calibrates live cost sensors — joining the live series to imported history is the separate calibration service. Removing the integration does not delete imported rows. Price history is interpreted in the price series' current unit; if the price sensor's unit changed mid-history, older previewed figures are wrong — sanity-check the totals. The response is returned only after the rows are committed and re-read from the database.",
+      "name": "Import energy cost backfill",
+      "description": "Writes the reconstructed historical cost series into long-term statistics. Requires an explicit confirm: true — without it nothing is written. Existing rows in the period block the import by default; overwrite_existing updates the window's matching hourly rows for this integration's own cost series — hours where the new series has no point keep their existing rows. Imports hourly rows in UTC, into long-term statistics only. Live cost sensors are touched only by the explicit calibrate option, which runs after the rows are committed and verified; without it, joining the live series to imported history is the separate calibration action. Removing the integration does not delete imported rows. Price history is interpreted in the price series' current unit; if the price sensor's unit changed mid-history, older previewed figures are wrong — sanity-check the totals. The response is returned only after the rows are committed and re-read from the database.",
       "fields": {
         "config_entry": {
           "name": "Config entry",
@@ -87,7 +87,7 @@
         },
         "start": {
           "name": "Start",
-          "description": "Start of the period, inclusive. Must be a top-of-the-hour UTC instant; a value with a timezone is converted to UTC, a value without one is interpreted in the Home Assistant timezone, and after conversion minutes, seconds and microseconds must be zero."
+          "description": "Start of the period, inclusive. Defaults to the price sensor's first recorded statistics hour — the earliest hour any cost can be computed — so leaving it empty covers the whole reconstructable history. When supplied, it must be a top-of-the-hour UTC instant; a value with a timezone is converted to UTC, a value without one is interpreted in the Home Assistant timezone, and after conversion minutes, seconds and microseconds must be zero."
         },
         "end": {
           "name": "End",
@@ -97,6 +97,18 @@
           "name": "Appliances",
           "description": "Limit the import to the appliances using these energy sensors. Default: every appliance in the entry. Required narrowing when supplying initial_cost, and the recovery path after a partial multi-appliance outcome."
         },
+        "overwrite_existing": {
+          "name": "Overwrite existing",
+          "description": "Proceed although the cost series already has rows in the period, updating the window's matching hourly rows for this integration's own cost series. Hours where the new series has no point keep their existing rows; rows outside the period are never touched; there is no deletion path. Automations that omit this field get false."
+        },
+        "calibrate": {
+          "name": "Calibrate cost sensors",
+          "description": "After the rows are committed and verified, set each cost sensor to continue the imported series: the receipt's total cost plus energy metered since end, priced at the current price. Valid only while end is still within the current hour. An appliance that cannot be calibrated safely is skipped visibly — the receipt's calibration_skipped names the reason and remedy, and the imported rows are kept either way. Automations that omit this field get false."
+        },
+        "initial_cost": {
+          "name": "Initial cost",
+          "description": "Cumulative cost immediately before start, for continuing an existing series (default 0; negative values are valid). Requires exactly one selected appliance — one import call per appliance when supplying it. A wrong value makes the series step at start."
+        },
         "strict": {
           "name": "Strict",
           "description": "When on, the import aborts if any appliance has missing-price or invalid-energy hours. When off, flagged hours are skipped and reported in the receipt — skipped hours' consumption is never costed, a permanent under-count for the period."
@@ -104,19 +116,11 @@
         "confirm": {
           "name": "Confirm",
           "description": "Must be true for anything to be written. The requirement exists so a pasted preview call can never write history by accident; run preview_backfill first to inspect what would be written."
-        },
-        "overwrite_existing": {
-          "name": "Overwrite existing",
-          "description": "Proceed although the cost series already has rows in the period, updating the window's matching hourly rows for this integration's own cost series. Hours where the new series has no point keep their existing rows; rows outside the period are never touched; there is no deletion path."
-        },
-        "initial_cost": {
-          "name": "Initial cost",
-          "description": "Cumulative cost immediately before start, for continuing an existing series (default 0; negative values are valid). Requires exactly one selected appliance — one import call per appliance when supplying it. A wrong value makes the series step at start."
         }
       }
     },
     "calibrate_cost": {
-      "name": "Calibrate cost",
+      "name": "Calibrate cost sensor",
       "description": "Sets the cost sensor's cumulative cost to value (in the entry currency) and re-baselines to the energy sensor's current reading — subsequent accrual continues from the new value. To reset, calibrate to 0 — this records the whole accumulated cost as one negative change in long-term statistics. Never touches recorded statistics; the next hourly statistic records the jump as one change. Calibration changes the level from the next compiled hour onward; it cannot move a mismatch already recorded at the imported-to-live boundary. Cutover after an import: value = the import receipt's total_cost + (current meter reading − the receipt's end_energy_kwh) × the current price — valid only within the same price hour as the import's end; if the price changed, re-preview instead. Full recipe in the README.",
       "fields": {
         "value": {
@@ -132,6 +136,12 @@
     },
     "end_not_after_start": {
       "message": "end must be after start; got start {start} and end {end} in UTC."
+    },
+    "price_history_begins_now": {
+      "message": "The price sensor's history begins in the current hour; there is nothing to backfill yet. Hourly statistics for the current hour compile when it ends — try again later."
+    },
+    "initial_cost_not_finite": {
+      "message": "initial_cost must be a finite number; got {value}. Nothing was written."
     },
     "end_in_future": {
       "message": "end must not be in the future; got {end}, now is {now} in UTC."
