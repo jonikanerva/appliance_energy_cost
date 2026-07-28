@@ -1,0 +1,41 @@
+name: Release
+
+# Guards every published GitHub Release: the release tag and manifest.json
+# must agree on the version, because HACS uses the release tag name as the
+# available version while Home Assistant shows the manifest version — a
+# desync would lie to the user about what is installed (issue #37).
+# Convention: tags carry the v prefix (vX.Y.Z), manifest.json carries the
+# bare version (X.Y.Z). Deliberately minimal — no zip builds or uploads;
+# HACS fetches the release tag itself.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tag-matches-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Verify the release tag matches manifest.json's version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -eu
+          manifest_version="$(jq -r .version custom_components/appliance_energy_cost/manifest.json)"
+          case "$TAG" in
+            v*) tag_version="${TAG#v}" ;;
+            *)
+              echo "::error::Release tag '$TAG' does not follow the vX.Y.Z convention. Delete the release and its tag, then re-tag as 'v$manifest_version'."
+              exit 1
+              ;;
+          esac
+          if [ "$tag_version" != "$manifest_version" ]; then
+            echo "::error::Release tag '$TAG' does not match manifest.json version '$manifest_version'. Delete the release and its tag, bump manifest.json to $tag_version in a PR (or re-tag as 'v$manifest_version'), then re-release."
+            exit 1
+          fi
+          echo "Release tag '$TAG' matches manifest.json version '$manifest_version'."
