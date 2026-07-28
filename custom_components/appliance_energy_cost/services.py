@@ -6,21 +6,28 @@ rows into domain shapes at the edge, and hands the pure calculation to
 ``backfill.py``. The preview never writes; the import writes only through the
 supported ``async_import_statistics`` API, only to the integration's own cost
 statistic IDs, and only after an explicit ``confirm`` and every pre-write gate
-has passed for every selected appliance. Neither backfill service modifies
-live sensors — joining the live series to imported history is
-``calibrate_cost``, the batched entity service registered here (issue #7):
-validation lives in this module, the state mutation on the targeted
-``ApplianceCostSensor``, and recorded statistics are never touched.
+has passed for every selected appliance. The preview and the import never
+modify live sensors on their own — joining the live series to imported
+history is a calibration: either the explicit ``calibrate_cost`` batched
+entity service (issue #7), or the import's opt-in ``calibrate`` flag
+(issue #42), which runs the same single-mutation entity path per appliance
+AFTER the rows are committed and verified. Validation lives in this module,
+the state mutation on the targeted ``ApplianceCostSensor``, and recorded
+statistics are never touched by any calibration.
 
 Concurrency shape (event loop never blocks): sequential executor jobs — a
 recorder-executor pass reading metadata and rows, a general-executor pass
 running the Decimal-heavy series calculation, and (import only) a
-recorder-executor read-back after the write is committed.
+recorder-executor read-back after the write is committed, then a synchronous
+no-await calibration pass. Confirmed imports are serialised per entry by
+``EntryRuntimeData.import_lock``, held from period resolution through the
+calibration pass (issue #42).
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -51,8 +58,8 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_platform, service
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import service
 from homeassistant.helpers.recorder import get_instance
 from homeassistant.helpers.selector import ConfigEntrySelector, ConfigEntrySelectorConfig
 from homeassistant.helpers.typing import VolDictType
@@ -63,6 +70,9 @@ from .backfill import BackfillSeries, EnergyRow, PriceRow, build_backfill_series
 from .const import (
     ATTR_APPLIANCE,
     ATTR_APPLIANCES,
+    ATTR_CALIBRATE,
+    ATTR_CALIBRATED_TO,
+    ATTR_CALIBRATION_SKIPPED,
     ATTR_CONFIG_ENTRY,
     ATTR_CONFIRM,
     ATTR_END,
@@ -96,9 +106,15 @@ from .const import (
     SERVICE_CALIBRATE_COST,
     SERVICE_IMPORT_BACKFILL,
     SERVICE_PREVIEW_BACKFILL,
+    SKIP_CALIBRATION_FAILED,
+    SKIP_ENTITY_UNAVAILABLE,
+    SKIP_NO_END_ENERGY,
+    SKIP_NO_ROWS,
+    SKIP_STALE_HOUR,
     SUBENTRY_TYPE_APPLIANCE,
 )
 from .models import ApplianceConfig, EntryRuntimeData, decode_appliance_config
+from .sensor import ApplianceCostSensor
 from .units import (
     EnergyUnit,
     PriceUnit,
@@ -110,7 +126,6 @@ from .units import (
 
 if TYPE_CHECKING:
     from . import ApplianceEnergyCostConfigEntry
-    from .sensor import ApplianceCostSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,7 +134,10 @@ PREVIEW_SCHEMA: Final = vol.Schema(
         vol.Required(ATTR_CONFIG_ENTRY): ConfigEntrySelector(
             ConfigEntrySelectorConfig(integration=DOMAIN)
         ),
-        vol.Required(ATTR_START): cv.datetime,
+        # Optional (issue #42): an omitted start resolves to the price
+        # sensor's first hourly-statistics row — nothing is computable
+        # before price data exists (owner decision on issue #42).
+        vol.Optional(ATTR_START): cv.datetime,
         vol.Optional(ATTR_END): cv.datetime,
         vol.Optional(ATTR_APPLIANCES): vol.All(cv.ensure_list, [cv.entity_id], vol.Length(min=1)),
         vol.Optional(ATTR_STRICT, default=True): cv.boolean,
@@ -135,7 +153,12 @@ IMPORT_SCHEMA: Final = PREVIEW_SCHEMA.extend(
         # failure renders as a generic voluptuous error, the handler raises
         # the translated explanation of what confirm authorises.
         vol.Optional(ATTR_CONFIRM, default=False): cv.boolean,
+        # INVARIANT (issue #42): the schema defaults for overwrite_existing
+        # and calibrate stay False — services.yaml prefills the UI form with
+        # true for the first-run recipe, but an automation that omits either
+        # flag stays conservative.
         vol.Optional(ATTR_OVERWRITE_EXISTING, default=False): cv.boolean,
+        vol.Optional(ATTR_CALIBRATE, default=False): cv.boolean,
         # Deliberately no schema default: the continuity gate must
         # distinguish an ABSENT initial_cost from an explicit 0. Negative
         # values are legal — negative prices yield negative cumulative cost.
@@ -233,23 +256,96 @@ def _require_top_of_hour(field: str, value: datetime) -> None:
         )
 
 
-def _resolve_period(call: ServiceCall) -> tuple[datetime, datetime]:
+def _first_price_statistics_hour(hass: HomeAssistant, price_sensor: str) -> datetime | None:
+    """Resolve the price sensor's first hourly statistics row, bounded.
+
+    Runs on the recorder executor. The inverse of ``_last_pre_start_sums``'s
+    two-phase pattern: month buckets from the epoch find the first non-empty
+    local-calendar month, then one hourly read inside that bucket finds the
+    first row — never an unbounded hourly scan from the epoch. BOTH bucket
+    edges (the local month start AND the local next-month start) derive from
+    local-calendar arithmetic via ``dt_util``: a month containing a DST
+    transition is not a fixed number of hours, so naive UTC arithmetic (a
+    ``+31 days`` guess) would misplace an edge and can miss rows at the
+    month boundary. The types set covers both series shapes so the column
+    filter never empties it: ``mean`` survives for a measurement series,
+    ``state`` for a sum-bearing one.
+    """
+    monthly = statistics_during_period(
+        hass, _EPOCH, None, {price_sensor}, "month", None, {"mean", "state"}
+    )
+    month_rows = monthly.get(price_sensor, [])
+    if not month_rows:
+        return None
+    bucket_start = datetime.fromtimestamp(round(month_rows[0]["start"]), tz=UTC)
+    month_start_local = dt_util.as_local(bucket_start).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    if month_start_local.month == 12:
+        next_month_local = month_start_local.replace(year=month_start_local.year + 1, month=1)
+    else:
+        next_month_local = month_start_local.replace(month=month_start_local.month + 1)
+    hourly = statistics_during_period(
+        hass,
+        dt_util.as_utc(month_start_local),
+        dt_util.as_utc(next_month_local),
+        {price_sensor},
+        "hour",
+        None,
+        {"mean", "state"},
+    )
+    hour_rows = hourly.get(price_sensor, [])
+    if not hour_rows:
+        return None
+    return datetime.fromtimestamp(round(hour_rows[0]["start"]), tz=UTC)
+
+
+async def _async_resolve_period(
+    hass: HomeAssistant,
+    runtime: EntryRuntimeData,
+    call: ServiceCall,
+) -> tuple[datetime, datetime]:
     """Normalise the requested period to aware-UTC top-of-hour boundaries.
 
     ``dt_util.as_utc`` is the single conversion point: an aware value is
     converted, a naive value is interpreted in Home Assistant's configured
-    timezone. The default end is the start of the current UTC hour, so a
-    partial hour is never included.
+    timezone. An omitted start resolves to the price sensor's first hourly
+    statistics row — top-of-hour by construction, so the top-of-hour gate
+    applies to caller-supplied values only. The default end is the start of
+    the current UTC hour, so a partial hour is never included.
     """
     now = dt_util.utcnow()
-    start = dt_util.as_utc(call.data[ATTR_START])
-    _require_top_of_hour(ATTR_START, start)
+    raw_start: datetime | None = call.data.get(ATTR_START)
+    start_resolved = raw_start is None
+    if raw_start is None:
+        first_hour = await get_instance(hass).async_add_executor_job(
+            _first_price_statistics_hour, hass, runtime.price_sensor
+        )
+        if first_hour is None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="price_sensor_no_statistics",
+                translation_placeholders={"price_sensor": runtime.price_sensor},
+            )
+        start = first_hour
+    else:
+        start = dt_util.as_utc(raw_start)
+        _require_top_of_hour(ATTR_START, start)
     raw_end: datetime | None = call.data.get(ATTR_END)
     if raw_end is None:
         end = now.replace(minute=0, second=0, microsecond=0)
     else:
         end = dt_util.as_utc(raw_end)
-    _require_top_of_hour(ATTR_END, end)
+        _require_top_of_hour(ATTR_END, end)
+    if start_resolved and raw_end is None and start == end:
+        # The degenerate default-period case: the price history begins in
+        # the hour that is still compiling. Named explicitly because the
+        # generic end_not_after_start would mislead — the caller supplied
+        # neither boundary.
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="price_history_begins_now",
+        )
     if end <= start:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
@@ -508,7 +604,7 @@ async def _async_handle_preview(call: ServiceCall) -> ServiceResponse:
         hass, DOMAIN, call.data[ATTR_CONFIG_ENTRY]
     )
     runtime = entry.runtime_data
-    start, end = _resolve_period(call)
+    start, end = await _async_resolve_period(hass, runtime, call)
     expected_hours = (end - start) // timedelta(hours=1)
     strict = bool(call.data[ATTR_STRICT])
     selections = _selected_appliances(hass, entry, call)
@@ -832,14 +928,29 @@ def _verify_written(
     """Count committed rows per statistic id from the re-read; raise on any gap.
 
     A confirmed row is a re-read row whose start matches a written point's
-    start — on overwrite, pre-existing rows the new series did not touch
-    never inflate the count.
+    start AND whose sum matches the point's value (``math.isclose`` with an
+    absolute term for legitimately-zero sums). Timestamps alone are not
+    proof: on overwrite, a pre-existing stale row shares every expected
+    timestamp, so a silently failed UPDATE would report success over stale
+    values (issue #42 audit fold). Honest limit: after an idempotent re-run
+    the stale and fresh values are equal and indistinguishable — acceptable,
+    the data is correct either way. Pre-existing rows the new series did not
+    touch never inflate the count.
     """
     confirmed: dict[str, int] = {}
     failed: _ApplianceImport | None = None
     for item in imports:
-        read_keys = {round(row["start"]) for row in read_back.get(item.selection.statistic_id, [])}
-        confirmed[item.selection.statistic_id] = len(_point_keys(item.series) & read_keys)
+        read_sums: dict[int, float] = {}
+        for row in read_back.get(item.selection.statistic_id, []):
+            row_sum = row.get("sum")
+            if row_sum is not None:
+                read_sums[round(row["start"])] = row_sum
+        confirmed[item.selection.statistic_id] = sum(
+            1
+            for point in item.series.points
+            if (read_sum := read_sums.get(round(point.start.timestamp()))) is not None
+            and math.isclose(point.sum, read_sum, rel_tol=1e-9, abs_tol=1e-9)
+        )
         if failed is None and confirmed[item.selection.statistic_id] != len(item.series.points):
             failed = item
     if failed is not None:
@@ -879,12 +990,16 @@ def _appliance_receipt(
     item: _ApplianceImport,
     rows_written: int,
     existing_rows_kept: int | None,
+    calibration: Decimal | str | None,
 ) -> dict[str, JsonValueType]:
     """Build one appliance's import receipt from its preview-shaped summary.
 
     Preview vocabulary, no rounding anywhere: every figure is projected from
     the same summary the preview would return for identical inputs, with
-    ``rows_written`` coming from the post-commit re-read.
+    ``rows_written`` coming from the post-commit re-read. The calibration
+    outcome (present only when ``calibrate: true``) is exactly one of
+    ``calibrated_to`` (the new cumulative cost) XOR ``calibration_skipped``
+    (a reason constant from the closed set in const.py).
     """
     receipt: dict[str, JsonValueType] = {
         ATTR_APPLIANCE: item.summary[ATTR_APPLIANCE],
@@ -902,18 +1017,156 @@ def _appliance_receipt(
     }
     if existing_rows_kept is not None:
         receipt[ATTR_EXISTING_ROWS_KEPT] = existing_rows_kept
+    if isinstance(calibration, Decimal):
+        # Decimal → float at the edge like every other receipt figure.
+        receipt[ATTR_CALIBRATED_TO] = float(calibration)
+    elif calibration is not None:
+        receipt[ATTR_CALIBRATION_SKIPPED] = calibration
     return receipt
+
+
+def _cost_sensor_entity(
+    hass: HomeAssistant, entry_id: str, statistic_id: str
+) -> ApplianceCostSensor | None:
+    """Resolve a cost sensor's live entity object behind its platform.
+
+    The diagnostics-precedent platform lookup: the cost sensor's statistic
+    id IS its entity id (the sensor records statistics under its entity id).
+    A missing platform, a missing entity object, or a foreign type — the
+    entry unloading mid-call — degrades to ``None``, which the caller maps
+    to a visible skip, never a crash.
+    """
+    for platform in entity_platform.async_get_platforms(hass, DOMAIN):
+        if platform.domain != SENSOR_DOMAIN:
+            continue
+        if platform.config_entry is None or platform.config_entry.entry_id != entry_id:
+            continue
+        entity = platform.entities.get(statistic_id)
+        if isinstance(entity, ApplianceCostSensor):
+            return entity
+    return None
+
+
+def _calibrate_one(
+    hass: HomeAssistant,
+    entry: ApplianceEnergyCostConfigEntry,
+    item: _ApplianceImport,
+    *,
+    hour_gate_passes: bool,
+) -> Decimal | str:
+    """One appliance's post-import calibration attempt.
+
+    Gate order: the hour gate (all appliances share one verdict — see
+    ``_apply_calibrations``), the zero-rows gate (a series that wrote
+    nothing has no level to continue; calibrating to its ``total_cost``
+    would be a mass-reset hazard), the end-reading gate (no measured meter
+    level at ``end`` means the metered-since-end delta cannot be computed),
+    the entity gate, then the entity's own pre-checks inside
+    ``async_calibrate_from_import``.
+    """
+    if not hour_gate_passes:
+        return SKIP_STALE_HOUR
+    if not item.series.points:
+        return SKIP_NO_ROWS
+    if item.series.end_energy_kwh is None:
+        return SKIP_NO_END_ENERGY
+    entity = _cost_sensor_entity(hass, entry.entry_id, item.selection.statistic_id)
+    if entity is None:
+        return SKIP_ENTITY_UNAVAILABLE
+    try:
+        # BackfillSeries Decimals, never the receipt's floats.
+        return entity.async_calibrate_from_import(
+            item.series.total_cost, item.series.end_energy_kwh
+        )
+    except HomeAssistantError as err:
+        # Belt and braces: the entity maps every anticipated failure to a
+        # returned skip, but an unanticipated raise post-commit must degrade
+        # to a visible skip — it must NEVER mask or roll back the succeeded
+        # import.
+        _LOGGER.warning("%s: calibration after import raised: %s", item.selection.statistic_id, err)
+        return SKIP_CALIBRATION_FAILED
+
+
+def _apply_calibrations(
+    hass: HomeAssistant,
+    entry: ApplianceEnergyCostConfigEntry,
+    imports: tuple[_ApplianceImport, ...],
+    end: datetime,
+) -> dict[str, Decimal | str]:
+    """Calibrate every cost sensor to continue its just-verified import.
+
+    One synchronous no-await pass, run only after ``_verify_written``
+    succeeded and still under the entry's import lock. Per appliance the
+    outcome is the calibrated-to cost (``Decimal``) or a skip-reason
+    constant (``str``); every skip logs at WARNING. The hour gate is
+    evaluated ONCE, at this calibration moment: the import's ``end`` must
+    still be the start of the current hour, or the metered-since-end delta
+    would retro-price earlier hours at the current price — re-resolving
+    ``end`` to now instead was rejected for exactly that reason (issue #42
+    stress-test amendment 5).
+    """
+    current_hour = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
+    hour_gate_passes = end == current_hour
+    outcomes: dict[str, Decimal | str] = {}
+    for item in imports:
+        outcome = _calibrate_one(hass, entry, item, hour_gate_passes=hour_gate_passes)
+        if isinstance(outcome, str):
+            _LOGGER.warning(
+                "%s: calibration after import skipped: %s",
+                item.selection.statistic_id,
+                outcome,
+            )
+        outcomes[item.selection.statistic_id] = outcome
+    return outcomes
+
+
+def _import_log_fragment(
+    item: _ApplianceImport,
+    confirmed: dict[str, int],
+    calibrations: dict[str, Decimal | str] | None,
+) -> str:
+    """One appliance's slice of the post-import INFO summary line."""
+    statistic_id = item.selection.statistic_id
+    fragment = f"{statistic_id}: {confirmed[statistic_id]} rows"
+    if calibrations is None:
+        return fragment
+    outcome = calibrations[statistic_id]
+    if isinstance(outcome, Decimal):
+        return f"{fragment}, calibrated to {outcome}"
+    return f"{fragment}, calibration skipped ({outcome})"
+
+
+def _parse_initial_cost(raw_initial_cost: float | None) -> Decimal:
+    """Narrow ``initial_cost`` to a finite Decimal once, at the boundary.
+
+    The same finiteness gate as ``calibrate_cost``'s value (parity the two
+    fields have always promised): ``vol.Coerce(float)`` happily coerces
+    "inf"/"nan" strings a YAML call can carry, and a non-finite initial cost
+    would write non-finite state/sum statistics rows (issue #42 audit fold).
+    """
+    if raw_initial_cost is None:
+        return Decimal("0")
+    value = parse_finite_decimal(str(raw_initial_cost))
+    if value is None:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="initial_cost_not_finite",
+            translation_placeholders={"value": str(raw_initial_cost)},
+        )
+    return value
 
 
 async def _async_handle_import(call: ServiceCall) -> ServiceResponse:
     """Handle one ``import_backfill`` call.
 
-    Every pre-write gate is evaluated across every selected appliance BEFORE
-    anything is queued: any failure aborts the whole call with nothing
-    written. The write itself is per-appliance — the recorder has no
-    cross-appliance transaction — so a partial outcome is possible and is
-    reported honestly by the post-commit verification; overlap protection
-    makes any re-run safe (committed rows refuse, missing rows import).
+    Confirmed imports are serialised per entry: the runtime import lock is
+    held from period resolution through the post-commit calibration pass.
+    Releasing it any earlier would reopen the verified concurrent-import
+    race (two calls both passing the overlap and continuity gates during
+    the awaited read/compute windows, interleaving a mixed series); taking
+    it any later would let lock contention manufacture a stale ``end`` and
+    a guaranteed hour-gate calibration skip (issue #42 stress-test
+    amendment 2).
     """
     hass = call.hass
     if not call.data[ATTR_CONFIRM]:
@@ -924,17 +1177,38 @@ async def _async_handle_import(call: ServiceCall) -> ServiceResponse:
     entry: ApplianceEnergyCostConfigEntry = service.async_get_config_entry(
         hass, DOMAIN, call.data[ATTR_CONFIG_ENTRY]
     )
+    async with entry.runtime_data.import_lock:
+        return await _async_run_locked_import(hass, entry, call)
+
+
+async def _async_run_locked_import(
+    hass: HomeAssistant,
+    entry: ApplianceEnergyCostConfigEntry,
+    call: ServiceCall,
+) -> ServiceResponse:
+    """Run one confirmed import under the entry's import lock.
+
+    Every pre-write gate is evaluated across every selected appliance BEFORE
+    anything is queued: any failure aborts the whole call with nothing
+    written. The write itself is per-appliance — the recorder has no
+    cross-appliance transaction — so a partial outcome is possible and is
+    reported honestly by the post-commit verification; overlap protection
+    makes any re-run safe (committed rows refuse, missing rows import).
+    With ``calibrate: true`` a synchronous calibration pass follows a
+    successful verification; its failures are per-appliance visible skips,
+    never an abort — the import has already succeeded.
+    """
     runtime = entry.runtime_data
-    start, end = _resolve_period(call)
+    start, end = await _async_resolve_period(hass, runtime, call)
     expected_hours = (end - start) // timedelta(hours=1)
     strict = bool(call.data[ATTR_STRICT])
     overwrite_existing = bool(call.data[ATTR_OVERWRITE_EXISTING])
+    calibrate = bool(call.data[ATTR_CALIBRATE])
     raw_initial_cost: float | None = call.data.get(ATTR_INITIAL_COST)
     selections = _selected_appliances(hass, entry, call)
     if raw_initial_cost is not None:
         _require_single_appliance_for_initial_cost(selections)
-    # Decimal(str(...)) once at the boundary, exactly like every other float.
-    initial_cost = Decimal("0") if raw_initial_cost is None else Decimal(str(raw_initial_cost))
+    initial_cost = _parse_initial_cost(raw_initial_cost)
 
     source_ids = {runtime.price_sensor} | {
         selection.config.energy_sensor for selection in selections
@@ -997,15 +1271,15 @@ async def _async_handle_import(call: ServiceCall) -> ServiceResponse:
     read_back = await instance.async_add_executor_job(
         _read_back_cost_stats, hass, start, end, cost_ids
     )
+    # If verification raises, NO calibration runs: an unverified import must
+    # never re-level a live sensor.
     confirmed = _verify_written(imports, read_back)
+    calibrations = _apply_calibrations(hass, entry, imports, end) if calibrate else None
     _LOGGER.info(
         "Imported backfill %s - %s: %s",
         start.isoformat(),
         end.isoformat(),
-        "; ".join(
-            f"{item.selection.statistic_id}: {confirmed[item.selection.statistic_id]} rows"
-            for item in imports
-        ),
+        "; ".join(_import_log_fragment(item, confirmed, calibrations) for item in imports),
     )
 
     if not call.return_response:
@@ -1015,6 +1289,7 @@ async def _async_handle_import(call: ServiceCall) -> ServiceResponse:
             item,
             confirmed[item.selection.statistic_id],
             _existing_rows_kept(item, cost_stats) if overwrite_existing else None,
+            None if calibrations is None else calibrations[item.selection.statistic_id],
         )
         for item in imports
     ]
@@ -1023,6 +1298,7 @@ async def _async_handle_import(call: ServiceCall) -> ServiceResponse:
         ATTR_END: end.isoformat(),
         ATTR_STRICT: strict,
         ATTR_OVERWRITE_EXISTING: overwrite_existing,
+        ATTR_CALIBRATE: calibrate,
         ATTR_INITIAL_COST: float(initial_cost),
         CONF_CURRENCY: runtime.currency,
         CONF_PRICE_SENSOR: runtime.price_sensor,

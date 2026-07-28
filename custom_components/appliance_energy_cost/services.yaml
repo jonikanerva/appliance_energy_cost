@@ -6,7 +6,7 @@ preview_backfill:
         config_entry:
           integration: appliance_energy_cost
     start:
-      required: true
+      required: false
       selector:
         datetime:
     end:
@@ -27,6 +27,11 @@ preview_backfill:
       selector:
         boolean:
 import_backfill:
+  # Field order is UI order. The `default: true` on overwrite_existing and
+  # calibrate is a UI prefill for the first-run "full solution" recipe; the
+  # value travels explicitly in the payload, and the vol schema defaults stay
+  # false so automations that omit the flags stay conservative (issue #42).
+  # INVARIANT: confirm keeps `default: false` and stays LAST.
   fields:
     config_entry:
       required: true
@@ -34,7 +39,7 @@ import_backfill:
         config_entry:
           integration: appliance_energy_cost
     start:
-      required: true
+      required: false
       selector:
         datetime:
     end:
@@ -49,6 +54,22 @@ import_backfill:
           filter:
             domain: sensor
             device_class: energy
+    overwrite_existing:
+      required: false
+      default: true
+      selector:
+        boolean:
+    calibrate:
+      required: false
+      default: true
+      selector:
+        boolean:
+    initial_cost:
+      required: false
+      selector:
+        number:
+          mode: box
+          step: any
     strict:
       required: false
       default: true
@@ -59,17 +80,6 @@ import_backfill:
       default: false
       selector:
         boolean:
-    overwrite_existing:
-      required: false
-      default: false
-      selector:
-        boolean:
-    initial_cost:
-      required: false
-      selector:
-        number:
-          mode: box
-          step: any
 calibrate_cost:
   target:
     entity:

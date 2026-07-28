@@ -52,7 +52,7 @@
   },
   "services": {
     "preview_backfill": {
-      "name": "Esikatsele takautuva täyttö",
+      "name": "Esikatsele energiakustannusten takautuva täyttö",
       "description": "Historiallisen kustannustäytön kuiva-ajo: lukee merkinnän hinta-anturin ja laitteiden energia-antureiden tuntikohtaiset pitkän aikavälin tilastot ja palauttaa laitekohtaiset pistemäärät, summat ja aukot. Ei kirjoita mitään — tuonti on erillinen, erikseen vahvistettava toiminto. Tulos ok tarkoittaa, että lähdedata läpäisi tarkistukset esikatseluhetkellä; tuonti valvoo päällekkäisyyssuojaa ja lukee historian uudelleen erikseen. Hintahistoria tulkitaan hintasarjan nykyisessä yksikössä; jos hinta-anturin yksikkö on vaihtunut kesken historian, vanhemmat esikatsellut luvut ovat väärin — tarkista summien järkevyys.",
       "fields": {
         "config_entry": {
@@ -61,7 +61,7 @@
         },
         "start": {
           "name": "Alku",
-          "description": "Jakson alku, mukaan lukien. On oltava tasatunti UTC-ajassa; aikavyöhykkeellinen arvo muunnetaan UTC:hen, aikavyöhykkeetön tulkitaan Home Assistantin aikavyöhykkeessä, ja muunnoksen jälkeen minuuttien, sekuntien ja mikrosekuntien on oltava nollia."
+          "description": "Jakson alku, mukaan lukien. Oletus on hinta-anturin ensimmäinen tallentunut tilastotunti — varhaisin tunti, jolle kustannus on ylipäätään laskettavissa — joten tyhjäksi jättäminen kattaa koko laskettavissa olevan historian. Annettuna arvon on oltava tasatunti UTC-ajassa; aikavyöhykkeellinen arvo muunnetaan UTC:hen, aikavyöhykkeetön tulkitaan Home Assistantin aikavyöhykkeessä, ja muunnoksen jälkeen minuuttien, sekuntien ja mikrosekuntien on oltava nollia."
         },
         "end": {
           "name": "Loppu",
@@ -78,8 +78,8 @@
       }
     },
     "import_backfill": {
-      "name": "Tuo takautuva täyttö",
-      "description": "Kirjoittaa lasketun historiallisen kustannussarjan pitkän aikavälin tilastoihin. Vaatii nimenomaisen confirm: true -arvon — ilman sitä mitään ei kirjoiteta. Jaksolla jo olevat rivit estävät tuonnin oletuksena; overwrite_existing päivittää ikkunan täsmäävät tuntirivit tämän integraation omassa kustannussarjassa — tunnit, joille uudella sarjalla ei ole pistettä, säilyttävät olemassa olevat rivinsä. Tuo tuntirivit UTC-ajassa, vain pitkän aikavälin tilastoihin. Ei koskaan kalibroi reaaliaikaisia kustannusantureita — reaaliaikaisen sarjan liittäminen tuotuun historiaan on erillinen kalibrointipalvelu. Integraation poistaminen ei poista tuotuja rivejä. Hintahistoria tulkitaan hintasarjan nykyisessä yksikössä; jos hinta-anturin yksikkö on vaihtunut kesken historian, vanhemmat esikatsellut luvut ovat väärin — tarkista summien järkevyys. Vastaus palautetaan vasta, kun rivit on tallennettu ja luettu uudelleen tietokannasta.",
+      "name": "Tuo energiakustannusten takautuva täyttö",
+      "description": "Kirjoittaa lasketun historiallisen kustannussarjan pitkän aikavälin tilastoihin. Vaatii nimenomaisen confirm: true -arvon — ilman sitä mitään ei kirjoiteta. Jaksolla jo olevat rivit estävät tuonnin oletuksena; overwrite_existing päivittää ikkunan täsmäävät tuntirivit tämän integraation omassa kustannussarjassa — tunnit, joille uudella sarjalla ei ole pistettä, säilyttävät olemassa olevat rivinsä. Tuo tuntirivit UTC-ajassa, vain pitkän aikavälin tilastoihin. Reaaliaikaisiin kustannusantureihin koskee vain nimenomainen calibrate-valinta, joka ajetaan vasta kun rivit on tallennettu ja varmennettu; ilman sitä reaaliaikaisen sarjan liittäminen tuotuun historiaan on erillinen kalibrointitoiminto. Integraation poistaminen ei poista tuotuja rivejä. Hintahistoria tulkitaan hintasarjan nykyisessä yksikössä; jos hinta-anturin yksikkö on vaihtunut kesken historian, vanhemmat esikatsellut luvut ovat väärin — tarkista summien järkevyys. Vastaus palautetaan vasta, kun rivit on tallennettu ja luettu uudelleen tietokannasta.",
       "fields": {
         "config_entry": {
           "name": "Merkintä",
@@ -87,7 +87,7 @@
         },
         "start": {
           "name": "Alku",
-          "description": "Jakson alku, mukaan lukien. On oltava tasatunti UTC-ajassa; aikavyöhykkeellinen arvo muunnetaan UTC:hen, aikavyöhykkeetön tulkitaan Home Assistantin aikavyöhykkeessä, ja muunnoksen jälkeen minuuttien, sekuntien ja mikrosekuntien on oltava nollia."
+          "description": "Jakson alku, mukaan lukien. Oletus on hinta-anturin ensimmäinen tallentunut tilastotunti — varhaisin tunti, jolle kustannus on ylipäätään laskettavissa — joten tyhjäksi jättäminen kattaa koko laskettavissa olevan historian. Annettuna arvon on oltava tasatunti UTC-ajassa; aikavyöhykkeellinen arvo muunnetaan UTC:hen, aikavyöhykkeetön tulkitaan Home Assistantin aikavyöhykkeessä, ja muunnoksen jälkeen minuuttien, sekuntien ja mikrosekuntien on oltava nollia."
         },
         "end": {
           "name": "Loppu",
@@ -97,6 +97,18 @@
           "name": "Laitteet",
           "description": "Rajaa tuonti näitä energia-antureita käyttäviin laitteisiin. Oletus: kaikki merkinnän laitteet. Pakollinen rajaus initial_cost-arvoa annettaessa ja toipumisreitti osittaisen monilaitetuloksen jälkeen."
         },
+        "overwrite_existing": {
+          "name": "Korvaa olemassa olevat",
+          "description": "Jatka, vaikka kustannussarjassa on jo rivejä jaksolla, päivittäen ikkunan täsmäävät tuntirivit tämän integraation omassa kustannussarjassa. Tunnit, joille uudella sarjalla ei ole pistettä, säilyttävät olemassa olevat rivinsä; jakson ulkopuolisiin riveihin ei koskaan kosketa; poistoreittiä ei ole. Automaatio, joka jättää kentän pois, saa arvon epätosi."
+        },
+        "calibrate": {
+          "name": "Kalibroi kustannusanturit",
+          "description": "Kun rivit on tallennettu ja varmennettu, asettaa jokaisen kustannusanturin jatkamaan tuotua sarjaa: kuitin kokonaiskustannus plus lopun jälkeen mitattu energia nykyisellä hinnalla. Pätee vain, kun loppu on yhä kuluvan tunnin sisällä. Laite, jota ei voi kalibroida turvallisesti, ohitetaan näkyvästi — kuitin calibration_skipped kertoo syyn ja korjauskeinon, ja tuodut rivit säilyvät joka tapauksessa. Automaatio, joka jättää kentän pois, saa arvon epätosi."
+        },
+        "initial_cost": {
+          "name": "Alkukustannus",
+          "description": "Kumulatiivinen kustannus välittömästi ennen alkua olemassa olevan sarjan jatkamiseen (oletus 0; negatiiviset arvot ovat kelvollisia). Vaatii täsmälleen yhden valitun laitteen — yksi tuontikutsu laitetta kohden, kun arvo annetaan. Väärä arvo tekee sarjaan porrastuksen alkuhetkellä."
+        },
         "strict": {
           "name": "Tiukka",
           "description": "Päällä ollessaan tuonti keskeytyy, jos jollakin laitteella on puuttuvan hinnan tai virheellisen energian tunteja. Pois päältä ollessaan merkityt tunnit ohitetaan ja raportoidaan kuitissa — ohitettujen tuntien kulutusta ei koskaan hinnoitella, mikä on pysyvä alilaskenta jaksolle."
@@ -104,19 +116,11 @@
         "confirm": {
           "name": "Vahvista",
           "description": "On oltava tosi, jotta mitään kirjoitetaan. Vaatimus on olemassa, jotta liitetty esikatselukutsu ei voi koskaan kirjoittaa historiaa vahingossa; aja ensin preview_backfill nähdäksesi mitä kirjoitettaisiin."
-        },
-        "overwrite_existing": {
-          "name": "Korvaa olemassa olevat",
-          "description": "Jatka, vaikka kustannussarjassa on jo rivejä jaksolla, päivittäen ikkunan täsmäävät tuntirivit tämän integraation omassa kustannussarjassa. Tunnit, joille uudella sarjalla ei ole pistettä, säilyttävät olemassa olevat rivinsä; jakson ulkopuolisiin riveihin ei koskaan kosketa; poistoreittiä ei ole."
-        },
-        "initial_cost": {
-          "name": "Alkukustannus",
-          "description": "Kumulatiivinen kustannus välittömästi ennen alkua olemassa olevan sarjan jatkamiseen (oletus 0; negatiiviset arvot ovat kelvollisia). Vaatii täsmälleen yhden valitun laitteen — yksi tuontikutsu laitetta kohden, kun arvo annetaan. Väärä arvo tekee sarjaan porrastuksen alkuhetkellä."
         }
       }
     },
     "calibrate_cost": {
-      "name": "Kalibroi kustannus",
+      "name": "Kalibroi kustannusanturi",
       "description": "Asettaa kustannusanturin kumulatiivisen kustannuksen arvoon value (merkinnän valuutassa) ja asettaa lähtötasoksi energia-anturin nykyisen lukeman — kertymä jatkuu uudesta arvosta. Nollataksesi kalibroi arvoon 0 — tämä kirjaa koko kertyneen kustannuksen yhtenä negatiivisena muutoksena pitkän aikavälin tilastoihin. Ei koskaan kosketa tallennettuja tilastoja; seuraava tuntitilasto kirjaa hypyn yhtenä muutoksena. Kalibrointi muuttaa tasoa seuraavasta koostetusta tunnista alkaen; se ei voi siirtää tuodun ja reaaliaikaisen sarjan rajalle jo kirjattua poikkeamaa. Siirtymä tuonnin jälkeen: value = tuontikuitin total_cost + (mittarin nykyinen lukema − kuitin end_energy_kwh) × nykyinen hinta — pätee vain samalla hintatunnilla kuin tuonnin loppu; jos hinta on vaihtunut, aja esikatselu uudelleen. Täysi ohje README-tiedostossa.",
       "fields": {
         "value": {
@@ -132,6 +136,12 @@
     },
     "end_not_after_start": {
       "message": "Lopun on oltava alun jälkeen; saatiin alku {start} ja loppu {end} UTC-ajassa."
+    },
+    "price_history_begins_now": {
+      "message": "Hinta-anturin historia alkaa kuluvalla tunnilla; takautuvasti täytettävää ei vielä ole. Kuluvan tunnin tuntitilastot koostuvat tunnin päättyessä — yritä myöhemmin uudelleen."
+    },
+    "initial_cost_not_finite": {
+      "message": "Arvon initial_cost on oltava äärellinen luku; saatiin {value}. Mitään ei kirjoitettu."
     },
     "end_in_future": {
       "message": "Loppu ei saa olla tulevaisuudessa; saatiin {end}, nyt on {now} UTC-ajassa."

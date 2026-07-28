@@ -405,6 +405,106 @@ async def test_future_end_is_rejected(hass: HomeAssistant, freezer: FrozenDateTi
     assert excinfo.value.translation_key == "end_in_future"
 
 
+async def test_default_start_resolves_to_first_price_statistics_hour(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Omitted start resolves to the price sensor's first hourly row and echoes.
+
+    The resolved start comes back as the normal ``start`` field — no extra
+    marker (issue #42) — and the appliance's own later history start is
+    simply reported as energy-gap hours, exactly as with an explicit start.
+    """
+    entry = await _setup_entry(hass)
+    freezer.move_to("2026-07-20 10:30:00+00:00")
+    _seed_price(hass, _clean_price_rows())
+    # The appliance's history starts two hours after the price history.
+    _seed_energy(hass, ENERGY_SENSOR, [(_hour(2), 1.0, 101.0), (_hour(3), 2.0, 102.0)])
+    await async_wait_recording_done(hass)
+
+    response = await _call_preview(
+        hass, entry, **{ATTR_START: None, ATTR_END: _hour(4).isoformat()}
+    )
+    assert response[ATTR_START] == "2026-07-20T00:00:00+00:00"
+    assert response[ATTR_EXPECTED_HOURS] == 4
+    (summary,) = _appliance_summaries(response)
+    assert summary[ATTR_HOURLY_POINTS] == 2
+    assert summary[ATTR_ENERGY_GAP_HOURS] == 2
+
+
+async def test_default_start_first_price_row_in_last_hour_of_dst_month(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Pinned (issue #42 amendment 8): DST-transition month, last local hour.
+
+    Europe/Helsinki October 2026 spans 745 hours (the Oct 25 fall-back), so
+    BOTH bucket edges of the two-phase read must be local-calendar-derived:
+    a naive "+31 days" next-month edge lands one hour early in UTC and the
+    in-bucket hourly read would MISS a first row sitting in the month's
+    last local hour. The pytest harness runs in US/Pacific, so the zone is
+    pinned explicitly.
+    """
+    await hass.config.async_set_time_zone("Europe/Helsinki")
+    entry = await _setup_entry(hass)
+    # 2026-10-31 23:00 EET (UTC+2 after the fall-back) == 21:00 UTC: the
+    # last hour of October in Helsinki local time. The next row is already
+    # November local (2026-11-01 00:00 EET).
+    first_price_hour = datetime(2026, 10, 31, 21, 0, tzinfo=UTC)
+    freezer.move_to("2026-11-02 12:30:00+00:00")
+    _seed_price(
+        hass,
+        [(first_price_hour, 0.1), (first_price_hour + timedelta(hours=1), 0.2)],
+    )
+    _seed_energy(
+        hass,
+        ENERGY_SENSOR,
+        [
+            (first_price_hour, 1.0, 101.0),
+            (first_price_hour + timedelta(hours=1), 2.0, 102.0),
+        ],
+    )
+    await async_wait_recording_done(hass)
+
+    response = await _call_preview(hass, entry, **{ATTR_START: None, ATTR_END: None})
+    assert response[ATTR_START] == "2026-10-31T21:00:00+00:00"
+    (summary,) = _appliance_summaries(response)
+    assert summary[ATTR_HOURLY_POINTS] == 2
+
+
+async def test_default_period_when_price_history_begins_in_current_hour(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Resolution yielding start == end raises the dedicated clear error.
+
+    end_not_after_start would mislead here — the caller supplied neither
+    boundary (issue #42 amendment 8).
+    """
+    entry = await _setup_entry(hass)
+    freezer.move_to("2026-07-20 10:30:00+00:00")
+    current_hour = datetime(2026, 7, 20, 10, 0, tzinfo=UTC)
+    _seed_price(hass, [(current_hour, 0.1)])
+    _seed_energy(hass, ENERGY_SENSOR, [(current_hour, 1.0, 101.0)])
+    await async_wait_recording_done(hass)
+
+    with pytest.raises(ServiceValidationError) as excinfo:
+        await _call_preview(hass, entry, **{ATTR_START: None, ATTR_END: None})
+    assert excinfo.value.translation_domain == DOMAIN
+    assert excinfo.value.translation_key == "price_history_begins_now"
+
+
+async def test_default_start_without_price_statistics_names_the_remedy(
+    hass: HomeAssistant,
+) -> None:
+    """No price statistics at all: resolution fails with the existing error."""
+    entry = await _setup_entry(hass)
+    _seed_energy(hass, ENERGY_SENSOR, _clean_energy_rows())
+    await async_wait_recording_done(hass)
+
+    with pytest.raises(ServiceValidationError) as excinfo:
+        await _call_preview(hass, entry, **{ATTR_START: None})
+    assert excinfo.value.translation_key == "price_sensor_no_statistics"
+    assert excinfo.value.translation_placeholders == {"price_sensor": PRICE_SENSOR}
+
+
 async def test_default_end_is_start_of_current_utc_hour(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
