@@ -638,3 +638,20 @@ For a bug report, download diagnostics from the integration's entry page
 (**Settings → Devices & services → Appliance Energy Cost**). Entity IDs and
 names are redacted — the download is safe to attach. File issues at
 <https://github.com/jonikanerva/appliance_energy_cost/issues>.
+
+## Release process
+
+Semantic versioning. The release tag carries the `v` prefix (`v1.0.0`);
+`manifest.json` carries the bare version (`1.0.0`). HACS shows the release
+tag name as the available version — without published releases it shows a
+commit hash instead — and its version comparison treats `v1.0.0` and `1.0.0`
+as equal, so the tag and the manifest name the same version.
+
+1. Bump `version` in `custom_components/appliance_energy_cost/manifest.json`
+   to `X.Y.Z` in a PR; merge it.
+2. On the merge commit on `main`, create the tag `vX.Y.Z` and publish a
+   GitHub Release for it.
+3. The release workflow (`.github/workflows/release.yml`) verifies that the
+   tag matches the manifest version and fails loudly on a mismatch — delete
+   the release and its tag, fix whichever side is wrong, re-release.
+4. HACS picks up the release and offers the new version as an update.
