@@ -204,7 +204,7 @@
       "step": {
         "user": {
           "title": "Lisää laite",
-          "description": "Nimeä laite ja valitse sen olemassa oleva kumulatiivinen energia-anturi. Laitteen kustannusanturi hinnoittelee kulutetun energian kulutushetkellä voimassa olevalla hinnalla.",
+          "description": "Nimeä laite ja valitse sen olemassa oleva kumulatiivinen energia-anturi. Laitteen kustannusanturi hinnoittelee kulutetun energian kulutushetkellä voimassa olevalla hinnalla. Yksi merkintä voi hinnoitella kuinka monta laitetta tahansa — voit lisätä laitteita milloin tahansa integraatiosivulta toiminnolla Lisää laite.",
           "data": {
             "name": "Nimi",
             "energy_sensor": "Energia-anturi"
